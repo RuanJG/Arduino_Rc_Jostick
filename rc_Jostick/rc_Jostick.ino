@@ -1,11 +1,15 @@
 
 
+
+
 #include <mavlink.h>
+
 
 //main loop
 #define DELAY_TIME 50 //ms    1000/DELAY_TIME =  rate
-
-
+#define MAVLINK_CONNECT_TIMEOUT 60 // 3s: 3000/DELAY_TIME
+#define DEBUG_RC 0
+#define DEBUG_MAVLINK 1
 //********************************** rc channel 
 
 #define CHAN_COUNT 8
@@ -23,18 +27,21 @@
 #define CHAN_RC_MIN_VALUE 1000
 #define CHAN_RC_SCALE(x) x+ CHAN_RC_MIN_VALUE
 
-
-#define DEBUG_RC 0
-
-//******************************************** mavlink 
-#define MAVLINK_SYSID 255
-#define MAVLINK_COMPID 190
-
-//*************************************************************  rc Function
-
 int chan_rc_value[8]={ 0,0,0,0,  0,0,0,0 };
 uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE,  CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE,     CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
 int chan_rc_pin[8]= { A0,A1,A2,A3,A4,A5,8,9}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
+
+//********************************** mavlink 
+#define MAVLINK_SYSID 255
+#define MAVLINK_COMPID 190
+
+uint8_t last_time_recived = DELAY_TIME;
+mavlink_heartbeat_t g_current_heartbeat; ////custom_mode is stabliable ALT_HOLD ... ; base_mode is arm disarm
+
+
+//*************************************************************  rc Function
+
+
 
 void setup_chan_pin_type()
 {
@@ -89,6 +96,24 @@ int get_rc(int id)
 
 
 //************************************************************* mavlink Function
+int is_copter_connected()
+{
+  if( last_time_recived < MAVLINK_CONNECT_TIMEOUT ){
+    return 1;
+  }else{
+    last_time_recived = MAVLINK_CONNECT_TIMEOUT;
+    return 0;
+  }
+}
+void update_mavlink_status()
+{
+  if( is_copter_connected() ){
+    ;
+  }else{
+    ;
+  }
+  
+}
 int send_rc_override_messages()
 {
   int ret = 0;
@@ -115,6 +140,18 @@ int send_rc_override_messages()
   Serial.write(buf, len);
   return ret;
 }
+
+int send_setmode_message(int mode)
+{
+  mavlink_set_mode_t mode_sp;
+  
+  
+  mode_sp.base_mode = g_current_heartbeat.base_mode;
+}
+int send_arm_disarm_message(int arm)
+{
+}
+
 int send_heartbeat_messages()
 {
   int ret = 0;
@@ -135,27 +172,29 @@ int send_heartbeat_messages()
 }
 void mavlink_msg_loop() { 
   send_rc_override_messages();
-  //receive_and_handleMessage();
+  receive_and_handleMessage();
 }
 
 void receive_and_handleMessage() { 
   mavlink_message_t msg; 
   mavlink_status_t status;
+  int recived = 0;
+  
   //receive data over serial 
-  Serial.println("handle mesg");
   while(Serial.available() > 0) { 
     uint8_t c = Serial.read();
-    
-    //try to get a new message 
-    if(mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) { 
+    if( mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status) ) { 
       // Handle message
+      recived = 1;
+      
+  #if DEBUG_MAVLINK
       Serial.print("get a mavlink package; sysid=");
       Serial.print(msg.sysid);
       Serial.print(", compid=");
       Serial.print(msg.compid);
       Serial.print(", msgid=");
       Serial.println(msg.msgid);
-      
+ #endif
       switch(msg.msgid) {
               case MAVLINK_MSG_ID_SET_MODE: {
                 // set mode
@@ -169,9 +208,15 @@ void receive_and_handleMessage() {
                 //Do nothing
                 break;
       }
-    } 
-    // And get the next one
+    }
   }
+  if( recived ){
+    last_time_recived = 0;
+  }else{
+    last_time_recived ++;
+  }
+  update_mavlink_status();
+
 }
 
 
@@ -197,4 +242,5 @@ void loop() {
   
   delay(DELAY_TIME);
 }
+
 
