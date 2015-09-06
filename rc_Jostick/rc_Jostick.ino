@@ -31,6 +31,17 @@ int chan_rc_value[8]={ 0,0,0,0,  0,0,0,0 };
 uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE,  CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE,     CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
 int chan_rc_pin[8]= { A0,A1,A2,A3,A4,A5,8,9}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
 
+//********************************** key status
+#define KEY_MAX_COUNT 2
+typedef enum KEY_FUNCTION_ID_TT
+{
+  FUNC_ARM = 0 , /* arm = 1, disarm = 0*/
+  FUNC_LAND , /* do land = 1*/
+} KEY_FUNCTION_ID;
+int key_pin[2] = {8, 9};
+uint8_t key_value[2]={0,0};
+uint8_t key_function_status[2]={0 , 0};//the status changed after triggle happen
+
 //********************************** mavlink 
 #define MAVLINK_SYSID 255
 #define MAVLINK_COMPID 190
@@ -105,6 +116,13 @@ int is_copter_connected()
     return 0;
   }
 }
+int is_copter_armed()
+{
+  if( g_current_heartbeat.base_mode & MAV_MODE_FLAG_SAFETY_ARMED != 0 )
+    return 1;
+  else
+    return 0;
+}
 void update_mavlink_status()
 {
   if( is_copter_connected() ){
@@ -114,12 +132,27 @@ void update_mavlink_status()
   }
   
 }
+int send_mavlink_message(mavlink_message_t *message)
+{
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  uint16_t len = mavlink_msg_to_send_buffer(buf, message);
+  int ret;
+
+  ret = Serial.write(buf, len);
+  ret= ret==len ? 1:0;
+  
+#if DEBUG_MAVLINK
+  if( ret == 0 )
+    Serial.println("mavlink message send failed");
+#endif
+  return ret;
+}
 int send_rc_override_messages()
 {
   int ret = 0;
   mavlink_rc_channels_override_t sp;
   mavlink_message_t message;
-  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  
   
 // fill with the sp 
   sp.chan1_raw = get_rc(ROLL_ID);
@@ -135,21 +168,43 @@ int send_rc_override_messages()
   
 
   mavlink_msg_rc_channels_override_encode(MAVLINK_SYSID, MAVLINK_COMPID ,&message, &sp);
-  uint16_t len = mavlink_msg_to_send_buffer(buf, &message);
-
-  Serial.write(buf, len);
+  ret = send_mavlink_message(&message);
   return ret;
 }
 
 int send_setmode_message(int mode)
 {
   mavlink_set_mode_t mode_sp;
+  mavlink_message_t message;
+  int ret;
   
+  if( 0 == is_copter_connected() )
+    return 0;
+    
+	mode_sp.base_mode = g_current_heartbeat.base_mode;// MAV_MODE_FLAG_CUSTOM_MODE_ENABLED  ;// MAV_MODE_FLAG_DECODE_POSITION_SAFETY ;
+  mode_sp.custom_mode = mode;
+  mavlink_msg_set_mode_encode(MAVLINK_SYSID, MAVLINK_COMPID , &message , &mode_sp);
+  ret = send_mavlink_message(&message);
+  return ret;
   
-  mode_sp.base_mode = g_current_heartbeat.base_mode;
 }
 int send_arm_disarm_message(int arm)
 {
+  mavlink_command_long_t sp;
+  mavlink_message_t message;
+  int ret;
+  
+  if( 0 == is_copter_connected() )
+    return 0;
+   
+	sp.command = MAV_CMD_COMPONENT_ARM_DISARM;
+	sp.target_system = MAVLINK_SYSID;//control_data.system_id;
+	sp.target_component == MAVLINK_COMPID; 
+  sp.param1= arm;
+
+  mavlink_msg_command_long_encode(MAVLINK_SYSID, MAVLINK_COMPID ,&message,&sp);
+	ret = send_mavlink_message(&message);
+  return ret;
 }
 
 int send_heartbeat_messages()
@@ -164,15 +219,17 @@ int send_heartbeat_messages()
   sp.type = 6;//MAV_TYPE_GCS;
 
   mavlink_msg_heartbeat_encode(MAVLINK_SYSID, MAVLINK_COMPID ,&message, &sp);
-  uint16_t len = mavlink_msg_to_send_buffer(buf, &message);
-
-  Serial.write(buf, len);
-
+  ret = send_mavlink_message(&message);
   return ret;
 }
-void mavlink_msg_loop() { 
-  send_rc_override_messages();
-  receive_and_handleMessage();
+void sync_g_heartbeat_message(mavlink_message_t *msg)
+{
+  g_current_heartbeat.custom_mode = mavlink_msg_heartbeat_get_custom_mode(msg);
+  g_current_heartbeat.type = mavlink_msg_heartbeat_get_type(msg);
+  g_current_heartbeat.autopilot = mavlink_msg_heartbeat_get_autopilot(msg);
+  g_current_heartbeat.base_mode = mavlink_msg_heartbeat_get_base_mode(msg);
+  g_current_heartbeat.system_status = mavlink_msg_heartbeat_get_system_status(msg);
+  g_current_heartbeat.mavlink_version = mavlink_msg_heartbeat_get_mavlink_version(msg);
 }
 
 void receive_and_handleMessage() { 
@@ -196,11 +253,8 @@ void receive_and_handleMessage() {
       Serial.println(msg.msgid);
  #endif
       switch(msg.msgid) {
-              case MAVLINK_MSG_ID_SET_MODE: {
-                // set mode
-                break;
-              }
               case MAVLINK_MSG_ID_HEARTBEAT: {
+                sync_g_heartbeat_message(&msg);
                 send_heartbeat_messages();
                 break;
               }
@@ -215,9 +269,72 @@ void receive_and_handleMessage() {
   }else{
     last_time_recived ++;
   }
-  update_mavlink_status();
+  update_mavlink_status();  
 
 }
+
+
+
+
+
+void mavlink_msg_loop() { 
+  send_rc_override_messages();
+  receive_and_handleMessage();
+}
+
+
+
+
+//********************************************key function
+
+void setup_key_pin_mode()
+{
+  int i , ret ,val;
+  for ( i = 0; i< KEY_MAX_COUNT ; i++ )
+  {
+    pinMode( key_pin[i] , INPUT);
+  }
+}
+
+void do_key_func_arm_disarm()
+{
+  int arm=0;
+  if( is_copter_connected() )
+  {
+    if( is_copter_armed() )
+      arm  = 1;
+     send_arm_disarm_message(arm);
+  }
+}
+void do_key_func_land()
+{
+  ;
+}
+void do_key_event(int id)
+{
+  if( id == FUNC_ARM ){
+    do_key_func_arm_disarm();
+  }else if( id == FUNC_LAND ){
+    do_key_func_land();
+  }
+}
+void update_key_loop()
+{
+  int i , ret ,val;
+  for ( i = 0; i< KEY_MAX_COUNT ; i++ )
+  {
+    val = digitalRead(key_pin[i]);
+    if( val !=   key_value[i] )
+    {
+      if( val == 0 ){
+        // happen a triggle
+        do_key_event(i); 
+      }
+      key_value[i] = val;
+    }
+  }
+}
+
 
 
 
@@ -233,11 +350,12 @@ void setup() {
   // initialize serial communications at 9600 bps:
   Serial.begin(57600);
   setup_chan_pin_type();
+  setup_key_pin_mode();
 }
 
 void loop() {
-  
   update_rc_loop();
+  update_key_loop();
   mavlink_msg_loop();
   
   delay(DELAY_TIME);
