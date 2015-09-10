@@ -6,8 +6,8 @@
 
 
 //main loop
-#define DELAY_TIME 50 //ms    1000/DELAY_TIME =  rate
-#define MAVLINK_CONNECT_TIMEOUT 60 // 3s: 3000/DELAY_TIME
+#define DELAY_TIME 20 //ms    1000/DELAY_TIME =  rate
+#define MAVLINK_CONNECT_TIMEOUT 150 // 3s: 3000/DELAY_TIME
 #define DEBUG_RC 0
 #define DEBUG_MAVLINK 0
 //********************************** rc channel 
@@ -33,7 +33,7 @@ int chan_rc_pin[8]= { A0,A1,A2,A3,A4,A5,8,9}; // roll pitch,thr,roll, adc key 1,
 int chan_rc_sensor_max_min_value[8][2]={
   {390,640},
   {390,640},
-  {390,640},
+  {0,911},
   {330,680},
   {0,1023},
   {0,1023},
@@ -54,9 +54,9 @@ void setup_chan_pin_type()
 typedef enum KEY_FUNCTION_ID_TT
 {
   FUNC_ARM = 0 , /* arm = 1, disarm = 0*/
-  FUNC_LAND , /* do land = 1*/
+  FUNC_RTL , /* do land = 1*/
 } KEY_FUNCTION_ID;
-int key_pin[2] = {9, 8};
+int key_pin[2] = {9, 10};
 uint8_t key_value[2]={0,0};
 uint8_t key_function_status[2]={0 , 0};//the status changed after triggle happen
 
@@ -132,6 +132,12 @@ int get_rc_pin_value(int id)
     }else{
        val = analogRead(chan_rc_pin[id]);
     }
+/*
+      Serial.print("chan ");
+      Serial.print(id);
+      Serial.print("= ");
+      Serial.println(val);
+*/    
     //return CHAN_RC_SCALE(val);
     return scale_rc_value(id,val);
 }
@@ -377,8 +383,8 @@ void receive_and_handleMessage() {
 
 
 void mavlink_msg_loop() { 
-  //if( 1 == ready_for_send_rc )
-    //send_rc_override_messages();
+  if( 1 == ready_for_send_rc )
+    send_rc_override_messages();
   receive_and_handleMessage();
 }
 
@@ -392,13 +398,13 @@ void do_key_func_arm_disarm()
 {
   int arm=0;
   int mode;
-  
+
   mode  = get_copter_mode();
   if( is_copter_connected())
   {
     arm = is_copter_armed()==1 ? 0 : 1;
-    //if( arm==1 && mode != STABILIZE )
-      //return; // if need armed , but mode is not stablize , do failed
+    if( arm==1 && mode != STABILIZE )
+      return; // if need armed , but mode is not stablize , do failed
     send_arm_disarm_message(arm);
   }
 }
@@ -407,12 +413,17 @@ void do_key_func_land()
   if( is_copter_connected() && is_copter_armed())
     send_setmode_message(LAND);
 }
+void do_key_func_rtl()
+{
+    if( is_copter_connected() && is_copter_armed())
+      send_setmode_message(RTL);
+}
 void do_key_event(int id)
 {
   if( id == FUNC_ARM ){
     do_key_func_arm_disarm();
-  }else if( id == FUNC_LAND ){
-    do_key_func_land();
+  }else if( id == FUNC_RTL ){
+    do_key_func_rtl();
   }
 }
 void update_key_loop()
