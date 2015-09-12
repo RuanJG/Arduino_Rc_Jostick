@@ -22,22 +22,33 @@
 #define CHAN_7_ID 6
 #define CHAN_8_ID 7
 
+#define CHAN_MODE_TYPE 2
 #define CHAN_GPIO_TYPE 1
 #define CHAN_ANALOG_TYPE 0
+#define CHAN_RC_MODE_ID   CHAN_5_ID
+#define CHAN_RC_MODE_MIN   100
+#define CHAN_RC_MODE_MAX   1900
+#define CHAN_RC_MODE_1_VALUE   1000
+#define CHAN_RC_MODE_2_VALUE   1300
+#define CHAN_RC_MODE_3_VALUE   1400
+#define CHAN_RC_MODE_4_VALUE   1550
+#define CHAN_RC_MODE_5_VALUE   1700
+#define CHAN_RC_MODE_6_VALUE   1800
+
 #define CHAN_RC_MIN_VALUE 1000
 #define CHAN_RC_SCALE(x) x+ CHAN_RC_MIN_VALUE
 
-int chan_rc_value[8]={ 0,0,0,0,  0,0,0,0 };
-uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE,  CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE,     CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
-int chan_rc_pin[8]= { A0,A1,A2,A3,A4,A5,8,9}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
+int chan_rc_value[8]={ 0,0,0,0, CHAN_RC_MODE_1_VALUE ,0,0,0 };
+uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_MODE_TYPE,  CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_GPIO_TYPE };
+int chan_rc_pin[8]= { A0,A1,A2,A3, 0 ,A4,A5,8}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
 int chan_rc_sensor_max_min_value[8][2]={
   {390,640},
   {390,640},
   {0,911},
   {330,680},
+  {0,1023}, // mode type , no sense
   {0,1023},
   {0,1023},
-  {0,1000},//gpio
   {0,1000} //gpio
   };
 void setup_chan_pin_type()
@@ -50,15 +61,17 @@ void setup_chan_pin_type()
 }
 
 //********************************** key status
-#define KEY_MAX_COUNT 2
+//#define KEY_MAX_COUNT 2
 typedef enum KEY_FUNCTION_ID_TT
 {
   FUNC_ARM = 0 , /* arm = 1, disarm = 0*/
   FUNC_RTL , /* do land = 1*/
+  FUNC_SWITCH_MODE,
+  KEY_MAX_COUNT
 } KEY_FUNCTION_ID;
-int key_pin[2] = {9, 10};
-uint8_t key_value[2]={0,0};
-uint8_t key_function_status[2]={0 , 0};//the status changed after triggle happen
+int key_pin[KEY_MAX_COUNT] = {9, 10, 8};
+uint8_t key_value[KEY_MAX_COUNT]={0,0,0};
+uint8_t key_function_status[KEY_MAX_COUNT]={0 , 0, 0};//the status changed after triggle happen
 
 typedef enum LED_FUNCTION_ID_TT
 {
@@ -129,6 +142,8 @@ int get_rc_pin_value(int id)
     if( CHAN_GPIO_TYPE == chan_rc_pin_type[id] ){
       val = digitalRead(chan_rc_pin[id]);
       if( val == 1 ) val = 1000;
+    }else if( CHAN_MODE_TYPE == chan_rc_pin_type[id] ){
+      val = chan_rc_value[id];
     }else{
        val = analogRead(chan_rc_pin[id]);
     }
@@ -138,8 +153,12 @@ int get_rc_pin_value(int id)
       Serial.print("= ");
       Serial.println(val);
 */    
-    //return CHAN_RC_SCALE(val);
-    return scale_rc_value(id,val);
+    if( CHAN_MODE_TYPE == chan_rc_pin_type[id] ){
+        return val;
+    }else{
+         //return CHAN_RC_SCALE(val);
+        return scale_rc_value(id,val); 
+    }
 }
 void update_chan_rc_value()
 {
@@ -151,7 +170,7 @@ void update_chan_rc_value()
   for( i = 0; i< CHAN_COUNT; i++)
   {
     chan_rc_value[i] = get_rc_pin_value(i);
-    if( chan_rc_value[i] < CHAN_RC_MIN_VALUE )
+    if( chan_rc_value[i] < CHAN_RC_MIN_VALUE && CHAN_MODE_TYPE != chan_rc_pin_type[i] )
       chan_rc_value[i] = CHAN_RC_MIN_VALUE;
 #if DEBUG_RC
   Serial.print(chan_rc_value[i]);
@@ -171,7 +190,10 @@ int get_rc(int id)
 {
   return chan_rc_value[id];
 }
-
+void set_rc(int id, int val)
+{
+  chan_rc_value[id] = val;
+}
 
 
 //************************************************************* mavlink Function
@@ -228,7 +250,7 @@ void update_mavlink_status()
 {
   if( is_copter_connected() ){
     //switch_led(LED_CONNECTED, 1);
-    check_copter_mode();
+    //check_copter_mode();
   }else{
     ;
   }
@@ -383,7 +405,7 @@ void receive_and_handleMessage() {
 
 
 void mavlink_msg_loop() { 
-  if( 1 == ready_for_send_rc )
+  //if( 1 == ready_for_send_rc )
     send_rc_override_messages();
   receive_and_handleMessage();
 }
@@ -403,8 +425,8 @@ void do_key_func_arm_disarm()
   if( is_copter_connected())
   {
     arm = is_copter_armed()==1 ? 0 : 1;
-    if( arm==1 && mode != STABILIZE )
-      return; // if need armed , but mode is not stablize , do failed
+    //if( arm==1 && mode != STABILIZE )
+     // return; // if need armed , but mode is not stablize , do failed
     send_arm_disarm_message(arm);
   }
 }
@@ -418,12 +440,30 @@ void do_key_func_rtl()
     if( is_copter_connected() && is_copter_armed())
       send_setmode_message(RTL);
 }
+void do_key_func_switch_althold_stabilize()
+{
+   int mode = get_copter_mode();
+   if( mode != ALT_HOLD )
+      send_setmode_message(ALT_HOLD);
+   else
+      send_setmode_message(STABILIZE);
+}
+void do_key_func_switch_mode()
+{
+   int mode_rc = get_rc(CHAN_RC_MODE_ID);
+   if( mode_rc != CHAN_RC_MODE_1_VALUE )
+      set_rc( CHAN_RC_MODE_ID , CHAN_RC_MODE_1_VALUE );
+   else
+      set_rc( CHAN_RC_MODE_ID,CHAN_RC_MODE_6_VALUE );
+}
 void do_key_event(int id)
 {
   if( id == FUNC_ARM ){
     do_key_func_arm_disarm();
   }else if( id == FUNC_RTL ){
     do_key_func_rtl();
+  }else if( id == FUNC_SWITCH_MODE){
+    do_key_func_switch_mode();
   }
 }
 void update_key_loop()
