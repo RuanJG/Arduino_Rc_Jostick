@@ -205,6 +205,7 @@ void update_rc_min_max_vaule(int id)
       chan_rc_sensor_max_min_value[id][0] = chan_rc_sensor_max_min_value[id][1] - min_to_trim;
       chan_rc_sensor_max_min_value[id][2] = chan_rc_sensor_max_min_value[id][1] + min_to_trim;
     }
+    /*
     Serial.print("id=");
     Serial.print(id);
     Serial.print("trim=");
@@ -214,7 +215,7 @@ void update_rc_min_max_vaule(int id)
         Serial.print(", min=");
         Serial.print(chan_rc_sensor_max_min_value[id][0]);
     Serial.println(" ");
-      
+     */
 }
 void adc_sensor_cali(int id, int val)
 {
