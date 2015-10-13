@@ -48,8 +48,8 @@
 
 int need_cali_rc = 0;
 int chan_rc_value[8]={ 0,0,0,0, CHAN_RC_MODE_1_VALUE ,CHAN_RC_MODE_1_VALUE,CHAN_RC_MODE_1_VALUE,CHAN_RC_MODE_1_VALUE };//0,0,0 };
-uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_MODE_TYPE,  CHAN_MODE_TYPE ,CHAN_MODE_TYPE, CHAN_MODE_TYPE };//CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
-int chan_rc_pin[8]= { A0,A1,A2,A3, 0 ,8,8,8}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
+uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE,  CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };//CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
+int chan_rc_pin[8]= { A0,A1,A2,2,3 ,4,5,6}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
 int chan_rc_sensor_max_min_value[8][3]={
   {240, 0 ,845},
   {170, 0 ,780},
@@ -228,6 +228,23 @@ void adc_sensor_cali(int id, int val)
     chan_rc_min_max_tmp[id][1] = val;
     update_rc_min_max_vaule(id);
   }
+}
+void debug_rc_channel_val(int id)
+{
+      int val;
+    if( CHAN_GPIO_TYPE == chan_rc_pin_type[id] ){
+      val = digitalRead(chan_rc_pin[id]);
+    }else if( CHAN_MODE_TYPE == chan_rc_pin_type[id] ){
+      val = chan_rc_value[id];
+    }else{
+       val = analogRead(chan_rc_pin[id]);
+    }
+    chan_rc_value[id] = val;
+      Serial.print("chan ");
+      Serial.print(id);
+      Serial.print("= ");
+      Serial.println(val);
+    
 }
 int get_rc_pin_value(int id)
 {
@@ -644,8 +661,10 @@ void setup() {
   update_rc_trim_value();
 }
 
-void loop() {    
-  update_rc_loop();
+void loop() {   
+  for( int i =0 ; i< 8; i++ )
+    debug_rc_channel_val(i);
+  //update_rc_loop();
   //update_key_loop();
   mavlink_msg_loop();
   
