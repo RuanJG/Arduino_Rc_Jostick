@@ -48,13 +48,13 @@
 
 int need_cali_rc = 0;
 int chan_rc_value[8]={ 0,0,0,0, CHAN_RC_MODE_1_VALUE ,CHAN_RC_MODE_1_VALUE,CHAN_RC_MODE_1_VALUE,CHAN_RC_MODE_1_VALUE };//0,0,0 };
-uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE,  CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };//CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
-int chan_rc_pin[8]= { A0,A1,A2,2,3 ,4,5,6}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
+uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_ANALOG_TYPE,  CHAN_MODE_TYPE ,CHAN_MODE_TYPE, CHAN_MODE_TYPE };//CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
+int chan_rc_pin[8]= { A0,A1,A2,A3, A4 ,8,8,8}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
 int chan_rc_sensor_max_min_value[8][3]={
-  {240, 0 ,845},
-  {170, 0 ,780},
-  {45, 0 ,980},
-  {0, 0 ,760},//1016},
+  {56, 0 ,1000},
+  {85, 0 ,985},
+  {55, 0 ,960},
+  {0, 0 ,935},//1016},
   {0, 0 ,1023}, // mode type , no sense
   {0, 0 ,1000},//gpio
   {0, 0 ,1000},//gpio
@@ -70,6 +70,7 @@ int chan_rc_min_max_tmp[8][2]={
   {0,1},//gpio
   {0,1} //gpio
   };
+int revert_rc_mask = 0x0 | (1 << PITCH_ID) ;//set mask  1<<ROLL_ID , will revert roll chan
 void setup_chan_pin_type()
 {
   int i;
@@ -155,8 +156,9 @@ int scale_rc_value(int id, int val)
 {
   if( DEBUG_RC == 1 )
       return val;
-  else
-      return map( val, chan_rc_sensor_max_min_value[id][0], chan_rc_sensor_max_min_value[id][2], 1000, 2000);
+  else{
+      return map( val, chan_rc_sensor_max_min_value[id][0], chan_rc_sensor_max_min_value[id][2], CHAN_RC_MIN_VALUE, CHAN_RC_MAX_VALUE);
+  }
 }
 void update_rc_trim_value()
 {
@@ -229,6 +231,12 @@ void adc_sensor_cali(int id, int val)
     update_rc_min_max_vaule(id);
   }
 }
+int check_and_revert_rc_value(int id, int val)
+{
+  if(0 !=  (revert_rc_mask & (1<<id)) )
+    val = CHAN_RC_MAX_VALUE - (val-CHAN_RC_MIN_VALUE);
+  return val;
+}
 void debug_rc_channel_val(int id)
 {
       int val;
@@ -256,7 +264,7 @@ int get_rc_pin_value(int id)
       val = chan_rc_value[id];
     }else{
        val = analogRead(chan_rc_pin[id]);
-         if( 1 == need_cali_rc && id != THR_ID)
+         if( 1 == need_cali_rc && id != THR_ID && id <= YAW_ID)
              adc_sensor_cali(id,val);
     }
 /*
@@ -269,7 +277,8 @@ int get_rc_pin_value(int id)
         return val;
     }else{
          //return CHAN_RC_SCALE(val);
-        return scale_rc_value(id,val); 
+        val = scale_rc_value(id,val); 
+        return check_and_revert_rc_value(id,val);
     }
 }
 void update_chan_rc_value()
@@ -308,7 +317,14 @@ void set_rc(int id, int val)
 {
   chan_rc_value[id] = val;
 }
-
+void set_revert(int id)
+{
+  revert_rc_mask |= (id <<1);
+}
+void clear_revert(int id)
+{
+  revert_rc_mask &= ~(id<<1);
+}
 
 //************************************************************* mavlink Function
 int is_copter_connected()
@@ -662,11 +678,12 @@ void setup() {
 }
 
 void loop() {   
-  for( int i =0 ; i< 8; i++ )
-    debug_rc_channel_val(i);
-  //update_rc_loop();
+  //for( int i =0 ; i< 8; i++ )
+    //debug_rc_channel_val(i);
+  update_rc_loop();
   //update_key_loop();
   mavlink_msg_loop();
+
   
   delay(DELAY_TIME);
 }
