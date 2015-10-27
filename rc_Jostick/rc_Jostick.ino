@@ -76,6 +76,7 @@ void setup_chan_pin_type()
   int i;
   for( i = 0; i< CHAN_COUNT; i++){
     if( CHAN_GPIO_TYPE == chan_rc_pin_type[i] )
+    //if( CHAN_MODE_TYPE != chan_rc_pin_type[i] )
       pinMode( chan_rc_pin[i] , INPUT);
   }
 }
@@ -661,7 +662,51 @@ void triggle_led(int id)
    digitalWrite(led_pin[id], led? LOW:HIGH);
 }
 
-
+//####################################### jostick to pac cmd function
+void do_set_param(char *param_id, float param_val)
+{
+  Serial.print("get cmd: ");
+  Serial.print(param_id);
+  Serial.println(param_val);
+}
+void deal_setting_cmd_loop()
+{
+  //MAV_CMD_DO_SET_PARAMETER
+  mavlink_message_t msg; 
+  mavlink_status_t status;
+  int recived = 0;
+  char param_id[MAVLINK_MSG_PARAM_SET_FIELD_PARAM_ID_LEN];
+  float param_val;
+  
+  //receive data over serial 
+  while(is_uart_available() > 0) { 
+    uint8_t c = do_read_uart();
+    if( mavlink_parse_char(MAVLINK_COMM_1, c, &msg, &status) ) { 
+      // Handle message
+      recived = 1;
+      
+  #if DEBUG_MAVLINK
+      Serial.print("get a mavlink package; sysid=");
+      Serial.print(msg.sysid);
+      Serial.print(", compid=");
+      Serial.print(msg.compid);
+      Serial.print(", msgid=");
+      Serial.println(msg.msgid);
+ #endif
+      switch(msg.msgid) {
+              case MAVLINK_MSG_ID_PARAM_SET: {
+                mavlink_msg_param_set_get_param_id(&msg , param_id);
+                param_val = mavlink_msg_param_set_get_param_value(&msg);
+                do_set_param(param_id,param_val);
+                break;
+              }
+              default:
+                //Do nothing
+                break;
+      }
+    }
+  }
+}
 
 
 //***************************************************** main function
@@ -680,6 +725,7 @@ void setup() {
 void loop() {   
   //for( int i =0 ; i< 8; i++ )
     //debug_rc_channel_val(i);
+  deal_setting_cmd_loop();
   update_rc_loop();
   //update_key_loop();
   mavlink_msg_loop();
