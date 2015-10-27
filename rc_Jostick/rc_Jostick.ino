@@ -12,6 +12,8 @@
 #define MY_BOARD_TYPE BOARD_PRO_MICRO
 //#############################
 
+
+
 //main loop
 #define DELAY_TIME 20 //ms    1000/DELAY_TIME =  rate
 #define MAVLINK_CONNECT_TIMEOUT 150 // 3s: 3000/DELAY_TIME
@@ -48,8 +50,8 @@
 
 int need_cali_rc = 0;
 int chan_rc_value[8]={ 0,0,0,0, CHAN_RC_MODE_1_VALUE ,CHAN_RC_MODE_1_VALUE,CHAN_RC_MODE_1_VALUE,CHAN_RC_MODE_1_VALUE };//0,0,0 };
-uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_ANALOG_TYPE,  CHAN_MODE_TYPE ,CHAN_MODE_TYPE, CHAN_MODE_TYPE };//CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
-int chan_rc_pin[8]= { A0,A1,A2,A3, A4 ,8,8,8}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
+uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_MODE_TYPE,  CHAN_MODE_TYPE ,CHAN_MODE_TYPE, CHAN_MODE_TYPE };//CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
+int chan_rc_pin[8]= { A0,A1,A2,A3, 8 ,8,8,8}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
 int chan_rc_sensor_max_min_value[8][3]={
   {56, 0 ,1000},
   {85, 0 ,985},
@@ -76,6 +78,7 @@ void setup_chan_pin_type()
   int i;
   for( i = 0; i< CHAN_COUNT; i++){
     if( CHAN_GPIO_TYPE == chan_rc_pin_type[i] )
+    //if( CHAN_MODE_TYPE != chan_rc_pin_type[i] )
       pinMode( chan_rc_pin[i] , INPUT);
   }
 }
@@ -95,10 +98,13 @@ uint8_t key_function_status[KEY_MAX_COUNT]={0 , 0, 0};//the status changed after
 
 typedef enum LED_FUNCTION_ID_TT
 {
-  LED_CONNECTED = 0 , /* arm = 1, disarm = 0*/
+  LED_GCS_CONNECTED = 0 , /* arm = 1, disarm = 0*/
+  LED_WIFI_CONNECTED , /* arm = 1, disarm = 0*/
+  LED_TELEM_CONNECTED , /* arm = 1, disarm = 0*/  
   LED_COUNT , /* do land = 1*/
 } LED_FUNCTION_ID;
-uint8_t led_pin[1]={7};
+
+uint8_t led_pin[LED_COUNT]={40,41,42};
 
 void setup_key_pin_mode()
 {
@@ -333,7 +339,7 @@ int is_copter_connected()
     return 1;
   }else{
     last_time_recived = MAVLINK_CONNECT_TIMEOUT;
-    switch_led(LED_CONNECTED, 0);
+    //switch_led(LED_CONNECTED, 0);
     //Serial.flush();
     //send_heartbeat_messages();
     return 0;
@@ -542,7 +548,7 @@ void receive_and_handleMessage() {
               case MAVLINK_MSG_ID_HEARTBEAT: {
                 sync_g_heartbeat_message(&msg);
                 send_heartbeat_messages();
-                triggle_led(LED_CONNECTED);
+                //triggle_led(LED_CONNECTED);
                 break;
               }
               default:
@@ -661,31 +667,215 @@ void triggle_led(int id)
    digitalWrite(led_pin[id], led? LOW:HIGH);
 }
 
+//####################################### jostick to pac cmd function
+void do_set_param(char *param_id, float param_val)
+{
+  Serial.print("get cmd: ");
+  Serial.print(param_id);
+  Serial.println(param_val);
+}
+void deal_setting_cmd_loop()
+{
+  //MAV_CMD_DO_SET_PARAMETER
+  mavlink_message_t msg; 
+  mavlink_status_t status;
+  int recived = 0;
+  char param_id[MAVLINK_MSG_PARAM_SET_FIELD_PARAM_ID_LEN];
+  float param_val;
+  
+  //receive data over serial 
+  while(is_uart_available() > 0) { 
+    uint8_t c = do_read_uart();
+    if( mavlink_parse_char(MAVLINK_COMM_1, c, &msg, &status) ) { 
+      // Handle message
+      recived = 1;
+      
+  #if DEBUG_MAVLINK
+      Serial.print("get a mavlink package; sysid=");
+      Serial.print(msg.sysid);
+      Serial.print(", compid=");
+      Serial.print(msg.compid);
+      Serial.print(", msgid=");
+      Serial.println(msg.msgid);
+ #endif
+      switch(msg.msgid) {
+              case MAVLINK_MSG_ID_PARAM_SET: {
+                mavlink_msg_param_set_get_param_id(&msg , param_id);
+                param_val = mavlink_msg_param_set_get_param_value(&msg);
+                do_set_param(param_id,param_val);
+                break;
+              }
+              default:
+                //Do nothing
+                break;
+      }
+    }
+  }
+}
+
+
+
+
+//######################################################## mega funciton
+#define gcsSerial Serial1
+#define teleSerial Serial2
+#define lcdSerial Serial
+#define wifiSerial Serial3
+
+#define gcsCOM MAVLINK_COMM_0
+#define wifiCOM MAVLINK_COMM_1
+#define teleCOM MAVLINK_COMM_2
+
+#define GCS_ID 0
+#define WIFI_ID 1
+#define TELEM_ID 2
+
+uint8_t connectStatus = 1 ; //1= telem ; 2=wifi; 4= 4G , just one use for connect
+unsigned long lastPackageTime[3]={0,0,0}; // 0=gcs; 2=telem; 1=wifi  
+#define UART_BUFFER_LEN 2048
+uint8_t uartBuffer[UART_BUFFER_LEN];
+uint8_t mavlinkBuffer[MAVLINK_MAX_PACKET_LEN];
+
+inline int is_use_wifi_connect()
+{
+  return (connectStatus & 0x2) != 0  ?  1:0;
+}
+inline int is_use_telem_connect()
+{
+  return (connectStatus & 0x1) != 0  ?  1:0;
+}
+inline int is_use_4g_connect()
+{
+  return (connectStatus & 0x4) != 0  ?  1:0;
+}
+void mega2560_uart_setup()
+{
+  gcsSerial.begin(115200);
+  teleSerial.begin(57600);
+  wifiSerial.begin(115200);
+  lcdSerial.begin(57600);
+   
+}
+
+void mega2560_uart_loop()
+{
+  mega2560_listen_telem();
+  mega2560_listen_wifi();
+  mega2560_listen_gcs();
+}
+
+void mega2560_handle_cmd( mavlink_message_t *msg )
+{
+  
+}
+void mega2560_listen_gcs(){
+    int len, i;
+    mavlink_message_t msg; 
+    mavlink_status_t status;
+    uint16_t p_len ;
+    
+    len = gcsSerial.available();
+    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
+
+    for( i=0; i< len; i++){
+      char c =gcsSerial.read();
+      if( mavlink_parse_char(gcsCOM,  c , &msg, &status) ) { 
+        triggle_led(LED_GCS_CONNECTED);
+        if( MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE == msg.msgid) {
+              mega2560_handle_cmd(&msg);
+        }else{
+            p_len = mavlink_msg_to_send_buffer(mavlinkBuffer, &msg);
+            if( is_use_telem_connect() == 1 ){
+                  teleSerial.write(mavlinkBuffer,p_len);
+            }
+            if( is_use_wifi_connect() == 1 ){
+                wifiSerial.write(mavlinkBuffer, p_len);
+            }
+        }
+      }
+      lastPackageTime[GCS_ID] = millis();
+    }
+}
+
+void mega2560_listen_telem(){
+    int len, i;
+    uint16_t p_len ;
+    
+    len = teleSerial.available();
+    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
+
+    if( len > 0 ) {
+      if( is_use_telem_connect() == 1 ){
+        for( i=0; i< len; i++){
+          uartBuffer[i] =teleSerial.read();
+        }
+        gcsSerial.write(uartBuffer,len);
+      }
+      lastPackageTime[TELEM_ID] = millis();
+      triggle_led(LED_TELEM_CONNECTED);
+    }
+}
+void mega2560_listen_wifi(){
+    int len, i;
+    uint16_t p_len ;
+    
+    len = wifiSerial.available();
+    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
+
+    if( len > 0 ) {
+      if( is_use_wifi_connect() == 1 ){
+        for( i=0; i< len; i++){
+          uartBuffer[i] =wifiSerial.read();
+        }
+        gcsSerial.write(uartBuffer,len);
+      }
+      lastPackageTime[WIFI_ID] = millis();
+      triggle_led(LED_WIFI_CONNECTED);
+    }
+}
+
+
+
+void mega2560_update_status()
+{
+  unsigned long ms = millis();
+  int i;
+  for( i = 0; i< 3; i++){
+    if( (ms - lastPackageTime[i]) > 5000 ){//5s
+      switch_led(i,0); 
+    }
+  }
+}
+
+
+
+
+
+
+
+
 
 
 
 //***************************************************** main function
 
 void setup() {
-  // initialize serial communications at 9600 bps:
-  Serial.begin(57600);
-  if( MY_BOARD_TYPE == BOARD_PRO_MICRO )
-    Serial1.begin(57600);
-  setup_chan_pin_type();
-  setup_key_pin_mode();
+  mega2560_uart_setup();
+  //setup_chan_pin_type();
+  //setup_key_pin_mode();
   setup_led_pin_mode();
-  update_rc_trim_value();
+  //update_rc_trim_value();
 }
 
-void loop() {   
-  //for( int i =0 ; i< 8; i++ )
-    //debug_rc_channel_val(i);
+void loop() {
+  //debug_rc_channel_val(i);
   update_rc_loop();
   //update_key_loop();
-  mavlink_msg_loop();
+  mega2560_uart_loop();
 
+  mega2560_update_status();
   
-  delay(DELAY_TIME);
+  //delay(DELAY_TIME);
 }
 
 
