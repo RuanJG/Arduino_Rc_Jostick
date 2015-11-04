@@ -1,5 +1,4 @@
-
-
+#include <Servo.h>
 
 
 #include <mavlink.h>
@@ -709,29 +708,151 @@ void deal_setting_cmd_loop()
 }
 
 
+//################################### reciver function
+#define RC_COUNT 5
+uint16_t volatile rcs[RC_COUNT];
+int volatile pwms[RC_COUNT];
+int pwm_pins[RC_COUNT]={3,5,6,9,10};
+Servo myservo[RC_COUNT];
+void receive_setup()
+{
+    Serial.begin(57600);
+    Serial1.begin(57600);
+    
+    for(int i=0; i < RC_COUNT; i++){
+      rcs[i] = 0;
+      pwms[i]=0;
+      pinMode(pwm_pins[i],OUTPUT);
+      //analogWrite(pwm_pins[i],0);
+      myservo[i].attach(pwm_pins[i]); 
+    }
+}
+
+void rc_to_pwm()
+{
+  for( int i=0; i<RC_COUNT; i++){
+    pwms[i] =  map(rcs[i],1000,2000,45,140);
+    /*
+    if( pwms[i] > 179) pwms[i] = 179;
+    if( pwms[i] < 0 ) pwms[i] = 1;
+    */
+    //analogWrite(pwm_pins[i],pwms[i]);
+    myservo[i].write(pwms[i]);
+  }
+}
+void receive_and_deal_with_rc() { 
+  mavlink_message_t msg; 
+  mavlink_status_t status;
+  int recived = 0;
+  
+  //receive data over serial 
+  while(is_uart_available() > 0) { 
+    uint8_t c = do_read_uart();
+    if( mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status) ) { 
+      // Handle message
+      recived = 1;
+     
+      switch(msg.msgid) {
+              case MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE: {
+                rcs[0]=mavlink_msg_rc_channels_override_get_chan1_raw(&msg);
+                rcs[1]=mavlink_msg_rc_channels_override_get_chan2_raw(&msg);
+                rcs[2]=mavlink_msg_rc_channels_override_get_chan3_raw(&msg);
+                rcs[3]=mavlink_msg_rc_channels_override_get_chan4_raw(&msg);
+                rcs[4]=mavlink_msg_rc_channels_override_get_chan5_raw(&msg);
+                rc_to_pwm();
+                break;
+              }
+              default:
+                //Do nothing
+                break;
+      }
+    }
+  }
+}
+/*
+int volatile  pwm_index=0;
+
+void timer_pwm_setup()
+{
+  // initialize timer1 
+  noInterrupts();           // disable all interrupts
+  TCCR1A = 0;
+  TCCR1B = 0;
+
+  TCNT1  = 0;
+  TCCR1B |= (1 << WGM12);   // CTC mode
+  TCCR1B |= (1 << CS11);    // 8 prescaler 
+  
+  OCR1A = 2*1500;//20=100us            // compare match register 16MHz/8 2000= 1000hz
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+  OCR1B = 2*1000;//1000us            // compare match register 16MHz/8 2000= 1000hz
+  TIMSK1 |= (1 << OCIE1B);  // enable timer compare interrupt
+  
+  TCCR3A = 0;
+  TCCR3B = 0;
+  TCNT3  = 0;
+  TCCR3B |= (1 << WGM32);   // CTC mode
+  TCCR3B |= (1 << CS31);    // 8 prescaler 
+  OCR3A = 40000;            // 20ms  compare match register 16MHz/8 2000= 1000hz
+  //TIMSK3 |= (1 << OCIE3A);  // enable timer compare interrupt
+  
+  
+  TCCR0A = 0;
+  TCCR0B = 0;
+  TCNT0  = 0;
+  TCCR0B |= (1 << WGM02);   // CTC mode
+  TCCR0B |= (1 << CS01);    // 8 prescaler 
+  OCR0A = 1000;            // 500us  
+  TIMSK0 |= (1 << OCIE0A);  // enable timer compare interrupt
+  
+  interrupts();             // enable all interrupts
+}
+//int volatile  count=0;
+int volatile  time_us=0;
+ISR(TIMER1_COMPA_vect)          // timer compare interrupt service routine
+{
+  TIMSK1 &= ~(1 << OCIE1A);
+  Serial.println("1A");
+}
+ISR(TIMER1_COMPB_vect)          // timer compare interrupt service routine
+{
+    TIMSK1 &= ~(1 << OCIE1B);
+  Serial.println("1B");
+}
+
+
+
+int volatile  count1=0;
+ISR(TIMER3_COMPA_vect)          // timer compare interrupt service routine
+{
+  digitalWrite(pwm_pins[0],HIGH);
+  OCR1A = 2*1500;//20=100us            // compare match register 16MHz/8 2000= 1000hz
+    TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+    OCR1B = 2*1000;//1000us            // compare match register 16MHz/8 2000= 1000hz
+    TIMSK1 |= (1 << OCIE1B);  // enable timer compare interrupt
+
+}
+int volatile  count2=0;
+ISR(TIMER0_COMPA_vect)          // timer compare interrupt service routine
+{
+  count2++;
+  if( count2 >= 8000){
+     count2=0;
+     time_us++;
+     Serial.print(time_us);
+    Serial.println("s"); 
+  }
+}
+*/
 //***************************************************** main function
 
 void setup() {
-  // initialize serial communications at 9600 bps:
-  Serial.begin(57600);
-  if( MY_BOARD_TYPE == BOARD_PRO_MICRO )
-    Serial1.begin(57600);
-  setup_chan_pin_type();
-  setup_key_pin_mode();
-  setup_led_pin_mode();
-  update_rc_trim_value();
+  receive_setup();
+  //timer_pwm_setup();
 }
 
 void loop() {   
-  //for( int i =0 ; i< 8; i++ )
-    //debug_rc_channel_val(i);
-  deal_setting_cmd_loop();
-  update_rc_loop();
-  //update_key_loop();
-  mavlink_msg_loop();
-
-  
-  delay(DELAY_TIME);
+  receive_and_deal_with_rc();
 }
 
 
