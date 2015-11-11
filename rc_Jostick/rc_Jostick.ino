@@ -11,6 +11,25 @@
 //############################# change this for you board
 #define MY_BOARD_TYPE BOARD_PRO_MICRO
 //#############################
+#define gcsSerial Serial1
+#define teleSerial Serial2
+#define lcdSerial Serial
+#define wifiSerial Serial3
+
+#define gcsCOM MAVLINK_COMM_0
+#define wifiCOM MAVLINK_COMM_1
+#define teleCOM MAVLINK_COMM_2
+
+#define GCS_ID 0
+#define WIFI_ID 1
+#define TELEM_ID 2
+
+uint8_t connectStatus = 1 ; //1= telem ; 2=wifi; 4= 4G , just one use for connect
+unsigned long lastPackageTime[3]={0,0,0}; // 0=gcs; 2=telem; 1=wifi  
+#define UART_BUFFER_LEN 2048
+uint8_t uartBuffer[UART_BUFFER_LEN];
+uint8_t mavlinkBuffer[MAVLINK_MAX_PACKET_LEN];
+uint8_t isActivityPath[3]={0,0,0};
 
 
 
@@ -49,18 +68,18 @@
 #define CHAN_RC_SCALE(x) x+ CHAN_RC_MIN_VALUE
 
 int need_cali_rc = 0;
-int chan_rc_value[8]={ 0,0,0,0, CHAN_RC_MODE_1_VALUE ,CHAN_RC_MODE_1_VALUE,CHAN_RC_MODE_1_VALUE,CHAN_RC_MODE_1_VALUE };//0,0,0 };
-uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_MODE_TYPE,  CHAN_MODE_TYPE ,CHAN_MODE_TYPE, CHAN_MODE_TYPE };//CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
-int chan_rc_pin[8]= { A0,A1,A2,A3, 8 ,8,8,8}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
+int chan_rc_value[8]={ 0,0,0,0, CHAN_RC_MODE_1_VALUE ,0,0,0 };
+uint8_t chan_rc_pin_type[8]={ CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_MODE_TYPE,  CHAN_ANALOG_TYPE ,CHAN_ANALOG_TYPE, CHAN_ANALOG_TYPE };//CHAN_GPIO_TYPE ,CHAN_GPIO_TYPE, CHAN_GPIO_TYPE };
+int chan_rc_pin[8]= { A0,A1,A2,A3, 8 ,A4, A5,A6}; // roll pitch,thr,roll, adc key 1, adc key 2, gpio 4, gpio 5
 int chan_rc_sensor_max_min_value[8][3]={
-  {56, 0 ,1000},
-  {85, 0 ,985},
-  {55, 0 ,960},
-  {0, 0 ,935},//1016},
+  {0, 0 ,1023},
+  {0, 0 ,1023},
+  {0, 0 ,1023},
+  {0, 0 ,1023},
   {0, 0 ,1023}, // mode type , no sense
-  {0, 0 ,1000},//gpio
-  {0, 0 ,1000},//gpio
-  {0, 0 ,1000} //gpio
+  {0, 0 ,1023},//step key
+  {0, 0 ,1023},//mount pitch
+  {0, 0 ,1023} //mount roll
   };
 int chan_rc_min_max_tmp[8][2]={
   {0,1},
@@ -92,9 +111,20 @@ typedef enum KEY_FUNCTION_ID_TT
   FUNC_SWITCH_MODE,
   KEY_MAX_COUNT
 } KEY_FUNCTION_ID;
-int key_pin[KEY_MAX_COUNT] = {3, 4, 5};
+int key_pin[KEY_MAX_COUNT] = {30, 31, 32};
 uint8_t key_value[KEY_MAX_COUNT]={0,0,0};
 uint8_t key_function_status[KEY_MAX_COUNT]={0 , 0, 0};//the status changed after triggle happen
+
+void setup_key_pin_mode()
+{
+  int i , ret ,val;
+  for ( i = 0; i< KEY_MAX_COUNT ; i++ )
+  {
+    pinMode( key_pin[i] , INPUT);
+  }
+}
+
+//******************************************* led
 
 typedef enum LED_FUNCTION_ID_TT
 {
@@ -105,15 +135,6 @@ typedef enum LED_FUNCTION_ID_TT
 } LED_FUNCTION_ID;
 
 uint8_t led_pin[LED_COUNT]={40,41,42};
-
-void setup_key_pin_mode()
-{
-  int i , ret ,val;
-  for ( i = 0; i< KEY_MAX_COUNT ; i++ )
-  {
-    pinMode( key_pin[i] , INPUT);
-  }
-}
 void setup_led_pin_mode()
 {
   int i , ret ,val;
@@ -311,10 +332,16 @@ void update_chan_rc_value()
 #endif
 }
 
-void update_rc_loop()
+unsigned long rc_loop_ms = 0;
+void update_rc_loop(int delay_ms)
 {
-  update_chan_rc_value();
+  unsigned long ms = millis();
+  if(  (ms - rc_loop_ms) >= delay_ms){
+    update_chan_rc_value();
+    rc_loop_ms = ms;
+  }
 }
+
 int get_rc(int id)
 {
   return chan_rc_value[id];
@@ -392,14 +419,21 @@ void update_mavlink_status()
   }
   
 }
+int MAVLINK_UART = 0; //GCS, wifi, telem
 int do_write_uart(uint8_t *buf, int len)
 {
   int ret;
-   if( MY_BOARD_TYPE == BOARD_PRO_MICRO ){
-      ret = Serial1.write(buf,len);
-   }else{
-      ret = Serial.write(buf,len);
-   } 
+  if( MAVLINK_UART == GCS_ID ){
+    //Serial.println("wirte to gcs");
+    ret = gcsSerial.write(buf,len);
+  }else if( MAVLINK_UART == WIFI_ID ){
+    //Serial.println("write to wifi");
+    ret = wifiSerial.write(buf,len);
+  }else if( MAVLINK_UART == TELEM_ID ){
+    ret = teleSerial.write(buf,len);
+  }else{
+    ;//Serial.println("none way to send");
+  }
    return ret;
 }
 uint8_t do_read_uart()
@@ -717,24 +751,6 @@ void deal_setting_cmd_loop()
 
 
 //######################################################## mega funciton
-#define gcsSerial Serial1
-#define teleSerial Serial2
-#define lcdSerial Serial
-#define wifiSerial Serial3
-
-#define gcsCOM MAVLINK_COMM_0
-#define wifiCOM MAVLINK_COMM_1
-#define teleCOM MAVLINK_COMM_2
-
-#define GCS_ID 0
-#define WIFI_ID 1
-#define TELEM_ID 2
-
-uint8_t connectStatus = 1 ; //1= telem ; 2=wifi; 4= 4G , just one use for connect
-unsigned long lastPackageTime[3]={0,0,0}; // 0=gcs; 2=telem; 1=wifi  
-#define UART_BUFFER_LEN 2048
-uint8_t uartBuffer[UART_BUFFER_LEN];
-uint8_t mavlinkBuffer[MAVLINK_MAX_PACKET_LEN];
 
 inline int is_use_wifi_connect()
 {
@@ -750,7 +766,7 @@ inline int is_use_4g_connect()
 }
 void mega2560_uart_setup()
 {
-  gcsSerial.begin(115200);
+  gcsSerial.begin(57600);
   teleSerial.begin(57600);
   wifiSerial.begin(115200);
   lcdSerial.begin(57600);
@@ -766,7 +782,7 @@ void mega2560_uart_loop()
 
 void mega2560_handle_cmd( mavlink_message_t *msg )
 {
-  
+  Serial.println("I get a cmd ");
 }
 void mega2560_listen_gcs(){
     int len, i;
@@ -834,8 +850,6 @@ void mega2560_listen_wifi(){
     }
 }
 
-
-
 void mega2560_update_status()
 {
   unsigned long ms = millis();
@@ -848,9 +862,91 @@ void mega2560_update_status()
 }
 
 
+void mega2560wrt_listen_gcs(){
+    int len, i;
+    mavlink_message_t msg; 
+    mavlink_status_t status;
+    uint16_t p_len ;
+    
+    len = gcsSerial.available();
+    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
 
+    for( i=0; i< len; i++){
+      char c =gcsSerial.read();
+      if( mavlink_parse_char(gcsCOM,  c , &msg, &status) ) { 
+        mega2560_handle_cmd(&msg);
+        isActivityPath[GCS_ID]=1;
+      }
+      lastPackageTime[GCS_ID] = millis();
+    }
+}
+void mega2560wrt_listen_wifi(){
+    int len, i;
+    mavlink_message_t msg; 
+    mavlink_status_t status;
+    uint16_t p_len ;
+    
+    len = wifiSerial.available();
+    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
 
-
+    for( i=0; i< len; i++){
+      char c =wifiSerial.read();
+      if( mavlink_parse_char(wifiCOM,  c , &msg, &status) ) { 
+        mega2560_handle_cmd(&msg);
+        isActivityPath[WIFI_ID]=1;
+      }
+      lastPackageTime[WIFI_ID] = millis();
+    }
+}
+void mega2560wrt_update_status()
+{
+  unsigned long ms = millis();
+  int i;
+  for( i = 0; i< 3; i++){
+    if( (ms - lastPackageTime[i]) > 5000 ){//5s
+      switch_led(i,0); 
+    }
+  }
+}
+int  mega2560wrt_send_rc()
+{
+    int ret = 0;
+  mavlink_rc_channels_override_t sp;
+  mavlink_message_t message;
+  
+  
+// fill with the sp 
+  sp.chan1_raw = get_rc(ROLL_ID);
+  sp.chan2_raw = get_rc(PITCH_ID);
+  sp.chan3_raw = get_rc(THR_ID);
+  sp.chan4_raw = get_rc(YAW_ID);
+  sp.chan5_raw = get_rc(CHAN_5_ID);
+  sp.chan6_raw = get_rc(CHAN_6_ID);
+  sp.chan7_raw = get_rc(CHAN_7_ID);
+  sp.chan8_raw = get_rc(CHAN_8_ID);
+  sp.target_component = 1;
+  sp.target_system = 1;
+  
+  mavlink_msg_rc_channels_override_encode(MAVLINK_SYSID, MAVLINK_COMPID ,&message, &sp);
+  if( isActivityPath[GCS_ID] == 1 ){
+    MAVLINK_UART = GCS_ID;
+    ret = send_mavlink_message(&message);
+  }
+  if( isActivityPath[WIFI_ID] == 1 ){
+    MAVLINK_UART = WIFI_ID;
+    ret = send_mavlink_message(&message);
+  }
+  return ret;
+}
+unsigned long send_rc_ms=0;
+void mega2560wrt_send_rc_loop(int delay_ms)
+{
+  unsigned long ms = millis();
+  if(  (ms - send_rc_ms) >= delay_ms){
+    mega2560wrt_send_rc();
+    send_rc_ms = ms;
+  }
+}
 
 
 
@@ -861,19 +957,29 @@ void mega2560_update_status()
 
 void setup() {
   mega2560_uart_setup();
-  //setup_chan_pin_type();
-  //setup_key_pin_mode();
+  setup_chan_pin_type();
+  setup_key_pin_mode();
   setup_led_pin_mode();
   //update_rc_trim_value();
 }
 
 void loop() {
-  //debug_rc_channel_val(i);
-  update_rc_loop();
-  //update_key_loop();
-  mega2560_uart_loop();
+  //for( int i=0 ; i < 8 ; i++)
+   //debug_rc_channel_val(2);
+   //debug_rc_channel_val(3);
 
+  /*
+  mega2560_uart_loop();
   mega2560_update_status();
+  */
+  mega2560wrt_listen_gcs();
+  mega2560wrt_listen_wifi();
+  mega2560wrt_update_status();
+
+  update_rc_loop(10);//alway update
+  mega2560wrt_send_rc_loop(20);//echo 20 ms send a package
+  //update_key_loop();
+
   
   //delay(DELAY_TIME);
 }
