@@ -22,16 +22,25 @@ int call_connect_status = 0; // 0 no call connect, 1 call connect
 uint8_t buffer[MAX_BUFFER_SIZE];
 #define gcsSerial Serial
 #define GCS_COM MAVLINK_COMM_0
-#define MEGA2560_SYS_ID 25
-#define MEGA2560_RC_BOARD_COMP_ID 0
-#define MEGA2560_WIFI_BOARD_COMP_ID 1
-#define MEGA2560_WIFI_BOARD_CMD_CONNECT_TCP 1
-#define MEGA2560_WIFI_BOARD_CMD_SET_CONNECT_IP 2
-#define MEGA2560_WIFI_BOARD_CMD_DISCONNECT_TCP 3
-struct param_ip_data{
-    uint16_t ip[4];
-    int port ;
+
+//sync with tower ,esp8266 and mega2560{
+#define MEGA2560_SYS_ID 254
+enum _GCS_CMDS { 
+    MEGA2560_BOARD_CMD_WIFI_CONNECT_TCP =  1,
+    MEGA2560_BOARD_CMD_WIFI_SET_CONNECT_IP,
+    MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP,
+    MEGA2560_BOARD_CMD_WIFI_MAX_ID,
+    
+    //MEGA2560_BOARD_CMD_CHANGE_PATH
+    //....
+    MEGA2560_BOARD_CMD_MAX_ID
 };
+struct param_ip_data{
+    uint8_t ip[4];
+    uint8_t port[2] ;
+};
+//}
+
 
 //############################################  AP data 
 unsigned long connect_ap_ms = 0;
@@ -68,7 +77,7 @@ void uart_handle_mavlink(mavlink_message_t *msg)
   struct param_ip_data *data;
 
   
-  if( msg->compid== MEGA2560_WIFI_BOARD_COMP_ID && msg->msgid == MAVLINK_MSG_ID_PARAM_SET ){
+/*  if( msg->msgid == MAVLINK_MSG_ID_PARAM_SET ){
     mavlink_msg_param_set_decode(msg,&packet);
     if( packet.param_type == MEGA2560_WIFI_BOARD_CMD_CONNECT_TCP ){
       debugMsg("call wifi connect tcp");
@@ -86,7 +95,22 @@ void uart_handle_mavlink(mavlink_message_t *msg)
       debugMsg("call wifi disconnect tcp");
       call_connect_status = 0;
     }
+  }*/
+  mavlink_msg_param_set_decode(msg,&packet);
+  if( packet.param_value == MEGA2560_BOARD_CMD_WIFI_CONNECT_TCP ){
+      debugMsg("call wifi connect tcp");
+      call_connect_status = 1;
+  }else if( packet.param_value == MEGA2560_BOARD_CMD_WIFI_SET_CONNECT_IP){
+      data = (struct param_ip_data *)packet.param_id;
+      for( int i=0 ;i <4 ;i++) mIp[i]= data->ip[i];
+      mPort=data->port[0]|data->port[1]<<8;
+      debugMsg("get ip from gcs :");
+      debugMsg(mPort);debugMsg(mIp[0]);debugMsg(mIp[1]);debugMsg(mIp[2]);debugMsg(mIp[3]);
+  }else if( packet.param_value == MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP){
+      debugMsg("call wifi disconnect tcp");
+      call_connect_status = 0;
   }
+  
 }
 void uart_listen_gcs(){
     size_t len;
@@ -103,7 +127,7 @@ void uart_listen_gcs(){
     
       for( i=0; i< len; i++){
         if( mavlink_parse_char(GCS_COM,  buffer[i] , &msg, &status) ) { 
-          if( msg.sysid == MEGA2560_SYS_ID){
+          if( msg.msgid == MAVLINK_MSG_ID_PARAM_SET  && mavlink_msg_param_set_get_param_type(&msg)== MEGA2560_SYS_ID ){
             uart_handle_mavlink(&msg);
           }else{
             p_len = mavlink_msg_to_send_buffer(mavlinkBuffer,&msg);

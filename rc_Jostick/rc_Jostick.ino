@@ -14,11 +14,11 @@
 #define gcsSerial Serial1
 #define teleSerial Serial2
 #define lcdSerial Serial
-#define wifiSerial Serial3
+#define wifiSerial Serial3 
 
-#define gcsCOM MAVLINK_COMM_0
-#define wifiCOM MAVLINK_COMM_1
-#define teleCOM MAVLINK_COMM_2
+uint8_t gcsCOM =MAVLINK_COMM_0;
+uint8_t wifiCOM= MAVLINK_COMM_1;
+uint8_t teleCOM =MAVLINK_COMM_2;
 
 #define GCS_ID 0
 #define WIFI_ID 1
@@ -30,7 +30,8 @@ unsigned long lastPackageTime[3]={0,0,0}; // 0=gcs; 2=telem; 1=wifi
 uint8_t uartBuffer[UART_BUFFER_LEN];
 uint8_t mavlinkBuffer[MAVLINK_MAX_PACKET_LEN];
 uint8_t isActivityPath[3]={0,0,0};
-
+unsigned long copter_last_send_rc_ms=0;
+unsigned long gcs_last_send_rc_ms=0;
 
 
 //main loop
@@ -766,11 +767,13 @@ inline int is_use_4g_connect()
 }
 void mega2560_uart_setup()
 {
-  gcsSerial.begin(57600);
+  gcsSerial.begin(115200);
   teleSerial.begin(57600);
   wifiSerial.begin(115200);
   lcdSerial.begin(57600);
    
+  copter_last_send_rc_ms=millis();
+  gcs_last_send_rc_ms=millis();
 }
 
 void mega2560_uart_loop()
@@ -780,33 +783,118 @@ void mega2560_uart_loop()
   mega2560_listen_gcs();
 }
 
-void mega2560_handle_cmd( mavlink_message_t *msg )
+//sync with tower ,esp8266 and mega2560{
+#define MEGA2560_SYS_ID 254
+enum _GCS_CMDS { 
+    MEGA2560_BOARD_CMD_WIFI_CONNECT_TCP =  1,
+    MEGA2560_BOARD_CMD_WIFI_SET_CONNECT_IP,
+    MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP,
+    MEGA2560_BOARD_CMD_WIFI_MAX_ID,
+    
+    //MEGA2560_BOARD_CMD_CHANGE_PATH
+    //....
+    MEGA2560_BOARD_CMD_MAX_ID
+};
+struct param_ip_data{
+    uint8_t ip[4];
+    uint8_t port[2] ;
+};
+//}
+void mega2560_send_wifi_cmd(int cmd, struct param_ip_data *data)
 {
-  Serial.println("I get a cmd ");
+  mavlink_param_set_t ps;
+  mavlink_message_t msg;
+  
+  boolean need_send = true;
+  if( MEGA2560_BOARD_CMD_WIFI_SET_CONNECT_IP == cmd ){
+    ps.param_type= (byte) MEGA2560_SYS_ID;//0~10, i use 254:gcs
+    ps.param_value= cmd ; //cmd
+    ps.param_id[0] = (byte) data->ip[0];
+    ps.param_id[1] = (byte) data->ip[1];
+    ps.param_id[2] = (byte) data->ip[2];
+    ps.param_id[3] = (byte) data->ip[3];
+    ps.param_id[4] = (byte) data->port[0];
+    ps.param_id[5] = (byte) data->port[1];
+  }else if( MEGA2560_BOARD_CMD_WIFI_CONNECT_TCP == cmd ){
+    ps.param_type= (byte) MEGA2560_SYS_ID;
+    ps.param_value= cmd ;
+  }else if( MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP == cmd ){
+    ps.param_type= (byte) MEGA2560_SYS_ID;
+    ps.param_value= cmd ;
+  }else{
+    //false package
+    need_send = false;
+  }
+  if( need_send ){
+    mavlink_msg_param_set_encode(255,109,&msg,&ps);
+    mega2560_send_mavlink(1<<WIFI_ID,&msg);
+  }
+}
+void mega2560_handle_cmd( mavlink_message_t *msg )
+{//msg from gcs 
+  int p_len,cmd,value;
+  /*
+  mavlink_param_set_t packet;
+  mavlink_msg_param_set_decode(msg,&packet);
+  cmd = packet.param_value;
+  
+  Serial.println("I get a cmd package");
+  if( cmd < MEGA2560_BOARD_CMD_WIFI_MAX_ID ){
+    //the wifi board msg will send to wifi board directly
+    mega2560_send_mavlink(1<<WIFI_ID,msg);
+  }
+  */
+  mavlink_rc_channels_override_t packet;
+  mavlink_msg_rc_channels_override_decode(msg,  &packet);
+  cmd = packet.chan2_raw;
+  switch(cmd){
+    case MEGA2560_BOARD_CMD_WIFI_SET_CONNECT_IP:{
+       struct param_ip_data data;
+       data.ip[0]=packet.chan3_raw;data.ip[1]=packet.chan4_raw;data.ip[2]=packet.chan5_raw;data.ip[3]=packet.chan6_raw;
+       data.port[0]=packet.chan7_raw & 0xff;
+       data.port[1]=packet.chan7_raw>>8 & 0xff;
+       mega2560_send_wifi_cmd(MEGA2560_BOARD_CMD_WIFI_SET_CONNECT_IP,&data);
+       break; 
+    }
+    case MEGA2560_BOARD_CMD_WIFI_CONNECT_TCP:{
+      mega2560_send_wifi_cmd(MEGA2560_BOARD_CMD_WIFI_CONNECT_TCP,NULL);
+      break;
+    }
+    case MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP:{
+      mega2560_send_wifi_cmd(MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP,NULL);
+      break;
+    }
+    default:{
+      break; 
+    }
+  }
 }
 void mega2560_listen_gcs(){
     int len, i;
     mavlink_message_t msg; 
     mavlink_status_t status;
     uint16_t p_len ;
+    uint8_t ids;
     
     len = gcsSerial.available();
     len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
-
+    len = gcsSerial.readBytes(uartBuffer,len);
     for( i=0; i< len; i++){
-      char c =gcsSerial.read();
-      if( mavlink_parse_char(gcsCOM,  c , &msg, &status) ) { 
+      //char c =gcsSerial.read();
+      if( mavlink_parse_char(gcsCOM,  uartBuffer[i] , &msg, &status) ) { 
         triggle_led(LED_GCS_CONNECTED);
-        if( MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE == msg.msgid) {
+
+        if(  msg.msgid == MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE  && mavlink_msg_rc_channels_override_get_chan1_raw(&msg)== MEGA2560_SYS_ID ) {
               mega2560_handle_cmd(&msg);
         }else{
-            p_len = mavlink_msg_to_send_buffer(mavlinkBuffer, &msg);
+            ids=0;
             if( is_use_telem_connect() == 1 ){
-                  teleSerial.write(mavlinkBuffer,p_len);
+                  ids |= 1<<TELEM_ID;//teleSerial.write(mavlinkBuffer,p_len);
             }
             if( is_use_wifi_connect() == 1 ){
-                wifiSerial.write(mavlinkBuffer, p_len);
+                ids |= 1<<WIFI_ID;//wifiSerial.write(mavlinkBuffer, p_len);
             }
+            mega2560_send_mavlink(ids,&msg);
         }
       }
       lastPackageTime[GCS_ID] = millis();
@@ -819,12 +907,13 @@ void mega2560_listen_telem(){
     
     len = teleSerial.available();
     len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
-
     if( len > 0 ) {
       if( is_use_telem_connect() == 1 ){
+        /*
         for( i=0; i< len; i++){
           uartBuffer[i] =teleSerial.read();
-        }
+        }*/
+        len = teleSerial.readBytes(uartBuffer,len);
         gcsSerial.write(uartBuffer,len);
       }
       lastPackageTime[TELEM_ID] = millis();
@@ -840,14 +929,67 @@ void mega2560_listen_wifi(){
 
     if( len > 0 ) {
       if( is_use_wifi_connect() == 1 ){
+        /*
         for( i=0; i< len; i++){
           uartBuffer[i] =wifiSerial.read();
         }
+        */
+        len = wifiSerial.readBytes(uartBuffer,len);
         gcsSerial.write(uartBuffer,len);
       }
       lastPackageTime[WIFI_ID] = millis();
       triggle_led(LED_WIFI_CONNECTED);
     }
+}
+
+inline void mega2560_send_mavlink(uint8_t ids,mavlink_message_t *message)
+{
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  uint16_t len = mavlink_msg_to_send_buffer(buf, message);
+  if( 0!= (ids & 1<<GCS_ID)  )
+    gcsSerial.write(buf,len);
+  if( 0!= (ids & 1<<TELEM_ID)  )
+    teleSerial.write(buf,len);
+  if( 0!= (ids & 1<<WIFI_ID)  )
+    wifiSerial.write(buf,len);
+}
+void mega2560_send_rc(uint8_t ids)
+{
+  int ret = 0;
+  mavlink_rc_channels_override_t sp;
+  mavlink_message_t message;
+  
+// fill with the sp 
+  sp.chan1_raw = get_rc(ROLL_ID);
+  sp.chan2_raw = get_rc(PITCH_ID);
+  sp.chan3_raw = get_rc(THR_ID);
+  sp.chan4_raw = get_rc(YAW_ID);
+  sp.chan5_raw = get_rc(CHAN_5_ID);
+  sp.chan6_raw = get_rc(CHAN_6_ID);
+  sp.chan7_raw = get_rc(CHAN_7_ID);
+  sp.chan8_raw = get_rc(CHAN_8_ID);
+  sp.target_component = 1;
+  sp.target_system = 1;
+  
+  mavlink_msg_rc_channels_override_encode(MAVLINK_SYSID, MAVLINK_COMPID ,&message, &sp);
+  mega2560_send_mavlink(ids,&message);
+}
+void mega2560_send_rc_loop(int copter_each_ms, int gcs_each_ms)
+{//xx_each_ms < 0 , never send
+  uint8_t ids=0;
+  unsigned long ms = millis();
+  if( gcs_each_ms>0 && ((ms - gcs_last_send_rc_ms) >= gcs_each_ms) ){
+    ids |= 1<<GCS_ID;
+    gcs_last_send_rc_ms = ms;
+  }
+  if( copter_each_ms>0 && ((ms-copter_last_send_rc_ms) >= copter_each_ms) ){
+    if( is_use_wifi_connect() == 1 )
+      ids |= WIFI_ID;
+    if( is_use_telem_connect() == 1 )
+      ids |= TELEM_ID;
+    copter_last_send_rc_ms = ms;
+  }  
+  if( ids != 0 ) mega2560_send_rc(ids);
 }
 
 void mega2560_update_status()
@@ -861,6 +1003,11 @@ void mega2560_update_status()
   }
 }
 
+
+
+
+
+//################################## wrt 
 
 void mega2560wrt_listen_gcs(){
     int len, i;
@@ -968,10 +1115,15 @@ void loop() {
    //debug_rc_channel_val(2);
    //debug_rc_channel_val(3);
 
-  /*
+  
   mega2560_uart_loop();
   mega2560_update_status();
-  */
+  update_rc_loop(10);//echo 10ms update update
+  //update_key_loop();
+  mega2560_send_rc_loop(20,50);//copter send each 20ms, gcs 50ms 
+
+  
+  /*
   mega2560wrt_listen_gcs();
   mega2560wrt_listen_wifi();
   mega2560wrt_update_status();
@@ -979,7 +1131,7 @@ void loop() {
   update_rc_loop(10);//alway update
   mega2560wrt_send_rc_loop(20);//echo 20 ms send a package
   //update_key_loop();
-
+  */
   
   //delay(DELAY_TIME);
 }
