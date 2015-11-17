@@ -106,6 +106,7 @@ void uart_handle_mavlink(mavlink_message_t *msg)
       mPort=data->port[0]|data->port[1]<<8;
       debugMsg("get ip from gcs :");
       debugMsg(mPort);debugMsg(mIp[0]);debugMsg(mIp[1]);debugMsg(mIp[2]);debugMsg(mIp[3]);
+      check_and_disconnect_tcp();
   }else if( packet.param_value == MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP){
       debugMsg("call wifi disconnect tcp");
       call_connect_status = 0;
@@ -169,7 +170,7 @@ void startConnectTcp(int *ip,int port)
 }
 void check_and_disconnect_tcp()
 {
-  //if( client.connected() )
+  if( has_start_connect_tcp ) //client.connected() )
     client.stop();
   has_start_connect_tcp = false;
 }
