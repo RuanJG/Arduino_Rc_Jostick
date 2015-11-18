@@ -11,11 +11,11 @@
 //############################# change this for you board
 #define MY_BOARD_TYPE BOARD_PRO_MICRO
 //#############################
-#define gcsSerial Serial1
+#define gcsSerial Serial
 #define teleSerial Serial2
-#define lcdSerial Serial
+//#define lcdSerial Serial
 #define wifiSerial Serial3 
-#define gcsConfigSerial Serial
+#define gcsConfigSerial Serial1
 
 uint8_t gcsCOM =MAVLINK_COMM_0;
 uint8_t wifiCOM= MAVLINK_COMM_1;
@@ -42,8 +42,7 @@ unsigned long gcs_last_send_rc_ms=0;
 unsigned long last_report_gcs_ms =0;
 
 uint8_t bleConnected = 0;//as using ble connect to gcs for config, I send rc and msg after gcs sended a package to me
-
-
+#define GCS_USE_BLE 1 //1 gcs 0 gcsConfig
 
 //main loop
 #define DELAY_TIME 20 //ms    1000/DELAY_TIME =  rate
@@ -437,7 +436,7 @@ int do_write_uart(uint8_t *buf, int len)
   int ret;
   if( MAVLINK_UART == GCS_ID ){
     //Serial.println("wirte to gcs");
-    ret = gcsSerial.write(buf,len);
+    ret = gcs_write(buf,len);
   }else if( MAVLINK_UART == WIFI_ID ){
     //Serial.println("write to wifi");
     ret = wifiSerial.write(buf,len);
@@ -783,7 +782,7 @@ inline boolean set_connect_type(short type)
 }
 void mega2560_uart_setup()
 {
-  gcsSerial.begin(115200);
+  gcsSerial.begin(57600);
   teleSerial.begin(57600);
   wifiSerial.begin(115200);
   //lcdSerial.begin(57600);
@@ -897,6 +896,23 @@ void mega2560_handle_cmd( mavlink_message_t *msg )
     }
   }
 }
+
+inline int gcs_write(uint8_t *buff,int len)
+{
+#if GCS_USE_BLE
+  if( bleConnected == 1 )
+#endif
+  return gcsSerial.write(buff,len);
+}
+inline int gcsConfig_write(uint8_t *buff,int len)
+{
+#if GCS_USE_BLE
+  //if( bleConnected == 1 )
+#else
+  if( bleConnected == 1 )
+#endif
+  return gcsConfigSerial.write(buff,len);
+}
 void mega2560_listen_gcs(){
     int len, i;
     mavlink_message_t msg; 
@@ -910,7 +926,6 @@ void mega2560_listen_gcs(){
     for( i=0; i< len; i++){
       //char c =gcsSerial.read();
       if( mavlink_parse_char(gcsCOM,  uartBuffer[i] , &msg, &status) ) { 
-        triggle_led(LED_GCS_CONNECTED);
 
         if(  msg.msgid == MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE  && mavlink_msg_rc_channels_override_get_chan1_raw(&msg)== MEGA2560_SYS_ID ) {
               mega2560_handle_cmd(&msg);
@@ -925,6 +940,12 @@ void mega2560_listen_gcs(){
             mega2560_send_mavlink(ids,&msg);
         }
       }
+    }
+    if( len > 0 ){
+       triggle_led(LED_GCS_CONNECTED);
+    #if GCS_USE_BLE
+       bleConnected = 1;
+    #endif
       lastPackageTime[GCS_ID] = millis();
     }
 }
@@ -938,7 +959,7 @@ void mega2560_listen_telem(){
     if( len > 0 ) {
       if( is_use_telem_connect() == 1 ){
         len = teleSerial.readBytes(uartBuffer,len);
-        gcsSerial.write(uartBuffer,len);
+        gcs_write(uartBuffer,len);
       }
       lastPackageTime[TELEM_ID] = millis();
       triggle_led(LED_TELEM_CONNECTED);
@@ -954,7 +975,7 @@ void mega2560_listen_wifi(){
     if( len > 0 ) {
       if( is_use_wifi_connect() == 1 ){
         len = wifiSerial.readBytes(uartBuffer,len);
-        gcsSerial.write(uartBuffer,len);
+        gcs_write(uartBuffer,len);
       }
       lastPackageTime[WIFI_ID] = millis();
       triggle_led(LED_WIFI_CONNECTED);
@@ -974,7 +995,11 @@ void mega2560_listen_gcsConfig()
     for( i=0; i< len; i++){
       if( mavlink_parse_char(gcsConfigCOM,  uartBuffer[i] , &msg, &status) ) { 
         if(  msg.msgid == MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE  && mavlink_msg_rc_channels_override_get_chan1_raw(&msg)== MEGA2560_SYS_ID ) {
-           bleConnected = 1;
+#if  GCS_USE_BLE
+          //bleConnected = 1;
+#else
+          bleConnected = 1;
+#endif
           mega2560_handle_cmd(&msg);
         }else{
             //unkonw cmd
@@ -988,14 +1013,14 @@ inline void mega2560_send_mavlink(uint8_t ids,mavlink_message_t *message)
 {
   uint8_t buf[MAVLINK_MAX_PACKET_LEN];
   uint16_t len = mavlink_msg_to_send_buffer(buf, message);
-  if( 0!= (ids & 1<<GCS_ID)  )
-    gcsSerial.write(buf,len);
+  if( 0!= (ids & 1<<GCS_ID) )
+    gcs_write(buf,len);
   if( 0!= (ids & 1<<TELEM_ID)  )
     teleSerial.write(buf,len);
   if( 0!= (ids & 1<<WIFI_ID)  )
     wifiSerial.write(buf,len);
-  if( 0!= (ids & 1<<GCS_CONFIG_ID) && bleConnected==1 )
-    gcsConfigSerial.write(buf,len);
+  if( 0!= (ids & 1<<GCS_CONFIG_ID))
+    gcsConfig_write(buf,len);
 }
 void mega2560_send_rc(uint8_t ids)
 {
@@ -1079,98 +1104,6 @@ void mega2560_update_status()
     }
   }
   mega2560_report_status_to_gcs(REPORT_STATUS_MS);
-}
-
-
-
-
-
-//################################## wrt 
-
-void mega2560wrt_listen_gcs(){
-    int len, i;
-    mavlink_message_t msg; 
-    mavlink_status_t status;
-    uint16_t p_len ;
-    
-    len = gcsSerial.available();
-    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
-
-    for( i=0; i< len; i++){
-      char c =gcsSerial.read();
-      if( mavlink_parse_char(gcsCOM,  c , &msg, &status) ) { 
-        mega2560_handle_cmd(&msg);
-        isActivityPath[GCS_ID]=1;
-      }
-      lastPackageTime[GCS_ID] = millis();
-    }
-}
-void mega2560wrt_listen_wifi(){
-    int len, i;
-    mavlink_message_t msg; 
-    mavlink_status_t status;
-    uint16_t p_len ;
-    
-    len = wifiSerial.available();
-    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
-
-    for( i=0; i< len; i++){
-      char c =wifiSerial.read();
-      if( mavlink_parse_char(wifiCOM,  c , &msg, &status) ) { 
-        mega2560_handle_cmd(&msg);
-        isActivityPath[WIFI_ID]=1;
-      }
-      lastPackageTime[WIFI_ID] = millis();
-    }
-}
-void mega2560wrt_update_status()
-{
-  unsigned long ms = millis();
-  int i;
-  for( i = 0; i< 3; i++){
-    if( (ms - lastPackageTime[i]) > 5000 ){//5s
-      switch_led(i,0); 
-    }
-  }
-}
-int  mega2560wrt_send_rc()
-{
-    int ret = 0;
-  mavlink_rc_channels_override_t sp;
-  mavlink_message_t message;
-  
-  
-// fill with the sp 
-  sp.chan1_raw = get_rc(ROLL_ID);
-  sp.chan2_raw = get_rc(PITCH_ID);
-  sp.chan3_raw = get_rc(THR_ID);
-  sp.chan4_raw = get_rc(YAW_ID);
-  sp.chan5_raw = get_rc(CHAN_5_ID);
-  sp.chan6_raw = get_rc(CHAN_6_ID);
-  sp.chan7_raw = get_rc(CHAN_7_ID);
-  sp.chan8_raw = get_rc(CHAN_8_ID);
-  sp.target_component = 1;
-  sp.target_system = 1;
-  
-  mavlink_msg_rc_channels_override_encode(MAVLINK_SYSID, MAVLINK_COMPID ,&message, &sp);
-  if( isActivityPath[GCS_ID] == 1 ){
-    MAVLINK_UART = GCS_ID;
-    ret = send_mavlink_message(&message);
-  }
-  if( isActivityPath[WIFI_ID] == 1 ){
-    MAVLINK_UART = WIFI_ID;
-    ret = send_mavlink_message(&message);
-  }
-  return ret;
-}
-unsigned long send_rc_ms=0;
-void mega2560wrt_send_rc_loop(int delay_ms)
-{
-  unsigned long ms = millis();
-  if(  (ms - send_rc_ms) >= delay_ms){
-    mega2560wrt_send_rc();
-    send_rc_ms = ms;
-  }
 }
 
 
