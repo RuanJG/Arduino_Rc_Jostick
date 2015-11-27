@@ -7,13 +7,16 @@ enum wifi_errors {
     UART_ERROR = 2   
 };
 
+#define DEBUG_ENABLE 1
 inline void debugMsg(int msg)
 {
-  Serial1.println(msg);
+  if( DEBUG_ENABLE==1 )
+    Serial1.println(msg);
 }
 inline void debugMsg(char* msg)
 {
-  Serial1.println(msg);
+  if( DEBUG_ENABLE == 1 )
+    Serial1.println(msg);
 }
 
 //############################################## uart data
@@ -44,7 +47,8 @@ struct param_ip_data{
 
 //############################################  AP data 
 unsigned long connect_ap_ms = 0;
- char* ssid = "te-copter";
+ char* ssid = "RC_box";
+//char* ssid = "car1";
  char* password = "88888888";
 boolean has_start_connect_ap = false;
 
@@ -132,6 +136,7 @@ void uart_listen_gcs(){
             uart_handle_mavlink(&msg);
           }else{
             p_len = mavlink_msg_to_send_buffer(mavlinkBuffer,&msg);
+            //debugMsg("write mavlinik to tcp"); 
             tcp_write(mavlinkBuffer,p_len);
           }
         }
@@ -202,7 +207,7 @@ void tcp_write(uint8_t *buff, size_t len)
 {
   if( !client.connected() )
     return ;
-    
+    //debugMsg("write to tcp"); 
   client.write((const unsigned char*)buff,len);
   //for( int i=0 ; i< len; i++)
     //client.write(buff[i]);
@@ -244,7 +249,11 @@ void loop() {
       tcp_ret = check_and_reconnect_tcp(mIp,mPort);
       if( tcp_ret ){
         len = tcp_read(buffer,MAX_BUFFER_SIZE);
-        if( len > 0 ) gcsSerial.write(buffer,len);
+        
+        if( len > 0 ){
+          debugMsg("get tcp data");
+          gcsSerial.write(buffer,len);
+        }
       }
    }else{
       check_and_disconnect_tcp();
@@ -254,6 +263,7 @@ void loop() {
   }
   
   uart_listen_gcs();
+  delay(10);
   
 }
 

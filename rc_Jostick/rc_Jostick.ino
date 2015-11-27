@@ -16,6 +16,7 @@
 //#define lcdSerial Serial
 #define wifiSerial Serial3 
 #define gcsConfigSerial Serial1
+#define GCS_USE_BLE 1 //1 gcs 0 gcsConfig
 
 uint8_t gcsCOM =MAVLINK_COMM_0;
 uint8_t wifiCOM= MAVLINK_COMM_1;
@@ -27,14 +28,14 @@ uint8_t gcsConfigCOM = MAVLINK_COMM_3;
 #define TELEM_ID 2
 #define GCS_CONFIG_ID 3
 
-uint8_t connectStatus = 1<<TELEM_ID ; //1<<TELEM_ID = telem 1<<GCS_ID = phone 4G just one use for connect
-unsigned long lastPackageTime[3]={0,0,0}; // 0=gcs; 2=telem; 1=wifi  
+uint8_t connectStatus = 1<<TELEM_ID | 1<< WIFI_ID; //1<<TELEM_ID = telem 1<<GCS_ID = phone 4G just one use for connect
+unsigned long lastPackageTime[4]={0,0,0,0}; // 0=gcs; 2=telem; 1=wifi  
 #define UART_BUFFER_LEN 2048
 uint8_t uartBuffer[UART_BUFFER_LEN];
 uint8_t mavlinkBuffer[MAVLINK_MAX_PACKET_LEN];
-uint8_t isActivityPath[3]={0,0,0};
+uint8_t isActivityPath[4]={0,0,0,0};
 
-#define COPTER_SEND_RC_MS 20
+#define COPTER_SEND_RC_MS 50
 #define GCS_SEND_RC_MS 300
 #define REPORT_STATUS_MS 200
 unsigned long copter_last_send_rc_ms=0;
@@ -42,7 +43,7 @@ unsigned long gcs_last_send_rc_ms=0;
 unsigned long last_report_gcs_ms =0;
 
 uint8_t bleConnected = 0;//as using ble connect to gcs for config, I send rc and msg after gcs sended a package to me
-#define GCS_USE_BLE 1 //1 gcs 0 gcsConfig
+
 
 //main loop
 #define DELAY_TIME 20 //ms    1000/DELAY_TIME =  rate
@@ -765,7 +766,7 @@ void deal_setting_cmd_loop()
 
 inline int is_use_wifi_connect()
 {
-  return (connectStatus & (1<<WIFI_ID) ) != 0  ?  1:0;
+  return (connectStatus & (1<<WIFI_ID) )!=0  ?  1:0;
 }
 inline int is_use_telem_connect()
 {
@@ -775,7 +776,11 @@ inline int is_use_4g_connect()
 {
   return (connectStatus & (1<<GCS_ID) ) != 0  ?  1:0;
 }
-inline boolean set_connect_type(short type)
+inline int is_use_this_id_connect(int id)
+{
+  return (connectStatus & (1<<id) ) != 0  ?  1:0;
+}
+inline boolean set_connect_type(uint8_t type)
 {
   connectStatus = type;
   return true;
@@ -798,6 +803,7 @@ void mega2560_uart_loop()
   mega2560_listen_telem();
   mega2560_listen_wifi();
   mega2560_listen_gcs();
+  mega2560_listen_gcsConfig();
 }
 
 //sync with tower ,esp8266 and mega2560{
@@ -889,7 +895,7 @@ void mega2560_handle_cmd( mavlink_message_t *msg )
     }
     case MEGA2560_BOARD_CMD_SWITCH_CONNECT:{
       short connect_type= packet.chan3_raw;
-      boolean ok = set_connect_type(connect_type);
+      boolean ok = set_connect_type((uint8_t)(0xff&connect_type));
     }
     default:{
       break; 
@@ -914,6 +920,7 @@ inline int gcsConfig_write(uint8_t *buff,int len)
   return gcsConfigSerial.write(buff,len);
 }
 void mega2560_listen_gcs(){
+  /*
     int len, i;
     mavlink_message_t msg; 
     mavlink_status_t status;
@@ -948,6 +955,27 @@ void mega2560_listen_gcs(){
     #endif
       lastPackageTime[GCS_ID] = millis();
     }
+    */
+    
+    int len, i;
+    uint16_t p_len ;
+    
+    len = gcsSerial.available();
+    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
+    if( len > 0 ) {
+      len = gcsSerial.readBytes(uartBuffer,len);
+#if GCS_USE_BLE
+       bleConnected = 1;
+#endif
+      if( is_use_telem_connect() == 1 ){
+        teleSerial.write(uartBuffer,len);
+      }
+      if( is_use_wifi_connect() == 1 ){
+        wifiSerial.write(uartBuffer,len);
+      }
+      lastPackageTime[GCS_ID] = millis();
+      triggle_led(LED_GCS_CONNECTED);
+    }
 }
 
 void mega2560_listen_telem(){
@@ -976,6 +1004,7 @@ void mega2560_listen_wifi(){
       if( is_use_wifi_connect() == 1 ){
         len = wifiSerial.readBytes(uartBuffer,len);
         gcs_write(uartBuffer,len);
+        //gcsSerial.write(uartBuffer,len);
       }
       lastPackageTime[WIFI_ID] = millis();
       triggle_led(LED_WIFI_CONNECTED);
@@ -993,7 +1022,7 @@ void mega2560_listen_gcsConfig()
     len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
     len = gcsConfigSerial.readBytes(uartBuffer,len);
     for( i=0; i< len; i++){
-      if( mavlink_parse_char(gcsConfigCOM,  uartBuffer[i] , &msg, &status) ) { 
+      if( mavlink_parse_char(gcsCOM,  uartBuffer[i] , &msg, &status) ) { 
         if(  msg.msgid == MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE  && mavlink_msg_rc_channels_override_get_chan1_raw(&msg)== MEGA2560_SYS_ID ) {
 #if  GCS_USE_BLE
           //bleConnected = 1;
@@ -1017,8 +1046,9 @@ inline void mega2560_send_mavlink(uint8_t ids,mavlink_message_t *message)
     gcs_write(buf,len);
   if( 0!= (ids & 1<<TELEM_ID)  )
     teleSerial.write(buf,len);
-  if( 0!= (ids & 1<<WIFI_ID)  )
+  if( 0!= (ids & 1<<WIFI_ID)  ){
     wifiSerial.write(buf,len);
+  }
   if( 0!= (ids & 1<<GCS_CONFIG_ID))
     gcsConfig_write(buf,len);
 }
@@ -1053,9 +1083,9 @@ void mega2560_send_rc_loop(int copter_each_ms, int gcs_each_ms)
   }
   if( copter_each_ms>0 && ((ms-copter_last_send_rc_ms) >= copter_each_ms) ){
     if( is_use_wifi_connect() == 1 )
-      ids |= WIFI_ID;
+      ids |= 1<<WIFI_ID;
     if( is_use_telem_connect() == 1 )
-      ids |= TELEM_ID;
+      ids |= 1<<TELEM_ID;
     copter_last_send_rc_ms = ms;
   }  
   if( ids != 0 ) mega2560_send_rc(ids);
@@ -1103,6 +1133,14 @@ void mega2560_update_status()
       isActivityPath[i] = 1;
     }
   }
+    if( is_use_wifi_connect() == 1  &&  isActivityPath[WIFI_ID]==0){
+      if( isActivityPath[TELEM_ID] == 1 ) 
+        set_connect_type(1<<TELEM_ID);
+    }
+    if( is_use_telem_connect() == 1  &&  isActivityPath[TELEM_ID]==0){
+      if( isActivityPath[WIFI_ID] == 1 ) 
+        set_connect_type(1<<WIFI_ID);
+    }
   mega2560_report_status_to_gcs(REPORT_STATUS_MS);
 }
 
