@@ -18,6 +18,12 @@
 #define gcsConfigSerial Serial1
 #define GCS_USE_BLE 1 //1 gcs 0 gcsConfig
 
+// config,2G,2.4G(telem)
+#define callSerial Serial3
+//#define teleSerial Serial2
+//#define gcsConfigSerial Serial1
+char copter_number [11]; // 2G number
+
 uint8_t gcsCOM =MAVLINK_COMM_0;
 uint8_t wifiCOM= MAVLINK_COMM_1;
 uint8_t teleCOM =MAVLINK_COMM_2;
@@ -761,6 +767,30 @@ void deal_setting_cmd_loop()
 
 
 
+//#################################################  2G function
+void mega2560_2g_call_connect()
+{//ADT+number+;
+  char cmd[32]={0};
+  memcpy(cmd,"ADT",3);
+  memcpy(&cmd[3],copter_number,11);
+  memcpy(&cmd[14],";\n\r",3);
+  callSerial.write(cmd,17);
+}
+void mega2560_2g_send_dtmf(char dtmf)
+{//AT+VTS=1//dtmf
+  char cmd[16]={0};
+  memcpy(cmd,"AT+VTS=",7);
+  cmd[7]=dtmf;
+  memcpy(&cmd[8],"\n\r",2);
+  callSerial.write(cmd,10);
+}
+void mega2560_2g_call_disconnect()
+{//ADT+number+;
+  char cmd[8]={0};
+  memcpy(cmd,"ATH\n\r",5);
+  callSerial.write(cmd,5);
+}
+
 
 //######################################################## mega funciton
 
@@ -819,6 +849,10 @@ enum _GCS_CMDS {
     MEGA2560_BOARD_CMD_SWITCH_CONNECT,
     MEGA2560_BOARD_CMD_MAX_ID,
     GCS_CMD_REPORT_STATUS,
+    MEGA2560_BOARD_CMD_2G_CONNECT,
+    MEGA2560_BOARD_CMD_2G_DISCONNECT,
+    MEGA2560_BOARD_CMD_2G_SEND_DTMF,
+    
     GCS_CMD_MAX_ID
 };
 struct param_ip_data{
@@ -896,6 +930,31 @@ void mega2560_handle_cmd( mavlink_message_t *msg )
     case MEGA2560_BOARD_CMD_SWITCH_CONNECT:{
       short connect_type= packet.chan3_raw;
       boolean ok = set_connect_type((uint8_t)(0xff&connect_type));
+      break;
+    }
+    case MEGA2560_BOARD_CMD_2G_CONNECT:{
+      copter_number[0] = (packet.chan3_raw & 0xff);
+      copter_number[1] = (packet.chan3_raw>>8 & 0xff);
+      copter_number[2] = (packet.chan4_raw & 0xff);
+      copter_number[3] = (packet.chan4_raw>>8 & 0xff);
+      copter_number[4] = (packet.chan5_raw & 0xff);
+      copter_number[5] = (packet.chan5_raw>>8 & 0xff);
+      copter_number[6] = (packet.chan6_raw & 0xff);
+      copter_number[7] = (packet.chan6_raw>>8 & 0xff);
+      copter_number[8] = (packet.chan7_raw & 0xff);
+      copter_number[9] = (packet.chan7_raw>>8 & 0xff);
+      copter_number[10] = (packet.chan8_raw & 0xff);
+      mega2560_2g_call_connect();
+      break;
+    }
+    case MEGA2560_BOARD_CMD_2G_DISCONNECT:{
+      mega2560_2g_call_disconnect();
+      break;
+    }
+    case MEGA2560_BOARD_CMD_2G_SEND_DTMF:{
+      char dtmf = (char)(packet.chan3_raw & 0xff);
+      mega2560_2g_send_dtmf( dtmf );
+      break;
     }
     default:{
       break; 
@@ -1171,6 +1230,10 @@ void listen_i2c_lcd(uint8_t *buff,int len)
     Serial.println((char*)buff);
   } 
 }
+
+
+
+
 
 //***************************************************** main function
 
