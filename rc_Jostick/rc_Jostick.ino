@@ -51,6 +51,32 @@ unsigned long last_report_gcs_ms =0;
 uint8_t bleConnected = 0;//as using ble connect to gcs for config, I send rc and msg after gcs sended a package to me
 
 
+//sync with tower ,esp8266 and mega2560{
+#define MEGA2560_SYS_ID 254
+enum _GCS_CMDS { 
+    MEGA2560_BOARD_CMD_WIFI_CONNECT_TCP =  1,
+    MEGA2560_BOARD_CMD_WIFI_SET_CONNECT_IP,
+    MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP,
+    MEGA2560_BOARD_CMD_WIFI_MAX_ID,
+    
+    //MEGA2560_BOARD_CMD_CHANGE_PATH
+    //....
+    MEGA2560_BOARD_CMD_SWITCH_CONNECT,
+    MEGA2560_BOARD_CMD_MAX_ID,
+    GCS_CMD_REPORT_STATUS,
+    MEGA2560_BOARD_CMD_2G_CONNECT,
+    MEGA2560_BOARD_CMD_2G_DISCONNECT,
+    MEGA2560_BOARD_CMD_2G_SEND_DTMF,
+    MEGA2560_BOARD_CMD_2G_SEND_LOG,
+    
+    GCS_CMD_MAX_ID
+};
+struct param_ip_data{
+    uint8_t ip[4];
+    uint8_t port[2] ;
+};
+//}
+
 //main loop
 #define DELAY_TIME 20 //ms    1000/DELAY_TIME =  rate
 #define MAVLINK_CONNECT_TIMEOUT 150 // 3s: 3000/DELAY_TIME
@@ -769,11 +795,11 @@ void deal_setting_cmd_loop()
 
 //#################################################  2G function
 void mega2560_2g_call_connect()
-{//ADT+number+;
+{//ATD+number+;
   char cmd[32]={0};
-  memcpy(cmd,"ADT",3);
+  memcpy(cmd,"ATD",3);
   memcpy(&cmd[3],copter_number,11);
-  memcpy(&cmd[14],";\n\r",3);
+  memcpy(&cmd[14],";\r\n",3);
   callSerial.write(cmd,17);
 }
 void mega2560_2g_send_dtmf(char dtmf)
@@ -781,16 +807,43 @@ void mega2560_2g_send_dtmf(char dtmf)
   char cmd[16]={0};
   memcpy(cmd,"AT+VTS=",7);
   cmd[7]=dtmf;
-  memcpy(&cmd[8],"\n\r",2);
+  memcpy(&cmd[8],"\r\n",2);
   callSerial.write(cmd,10);
 }
 void mega2560_2g_call_disconnect()
 {//ADT+number+;
   char cmd[8]={0};
-  memcpy(cmd,"ATH\n\r",5);
+  memcpy(cmd,"ATH\r\n",5);
   callSerial.write(cmd,5);
 }
+void mega2560_send_log_to_gcs(uint8_t * buf, int len)
+{
+  int ret = 0;
+  mavlink_rc_channels_override_t sp;
+  mavlink_message_t message;
+  uint8_t *p;
+  int count=0,i=0,rest=0;
+    
+  if( len <= 0 ) return ;
+// fill with the sp 
+  sp.chan1_raw = MEGA2560_SYS_ID; // my package tag
+  sp.chan2_raw = MEGA2560_BOARD_CMD_2G_SEND_LOG; // the connecting way
+  sp.target_component = 1;
+  sp.target_system = 1;
+  
+  p= (uint8_t*)&sp.chan3_raw;
+  while( count < len ){
+    rest = len - count;
+    rest = ((rest>10) ? 10:rest);
+    p[0]=rest;
+    p = &p[1];
+    for ( i =0; i < rest; i++ ,count++){ p[i]=buf[count];}
+    //for( i ; i< 11; i++ ) p[i] = 0;
+    mavlink_msg_rc_channels_override_encode(MAVLINK_SYSID, MAVLINK_COMPID ,&message, &sp);
+    mega2560_send_mavlink(1<<GCS_CONFIG_ID,&message);
+  }
 
+}
 
 //######################################################## mega funciton
 
@@ -819,9 +872,10 @@ void mega2560_uart_setup()
 {
   gcsSerial.begin(57600);
   teleSerial.begin(57600);
-  wifiSerial.begin(115200);
+  //wifiSerial.begin(115200);
   //lcdSerial.begin(57600);
   gcsConfigSerial.begin(57600);
+  callSerial.begin(9600);
    
   copter_last_send_rc_ms=millis();
   gcs_last_send_rc_ms=millis();
@@ -836,30 +890,7 @@ void mega2560_uart_loop()
   mega2560_listen_gcsConfig();
 }
 
-//sync with tower ,esp8266 and mega2560{
-#define MEGA2560_SYS_ID 254
-enum _GCS_CMDS { 
-    MEGA2560_BOARD_CMD_WIFI_CONNECT_TCP =  1,
-    MEGA2560_BOARD_CMD_WIFI_SET_CONNECT_IP,
-    MEGA2560_BOARD_CMD_WIFI_DISCONNECT_TCP,
-    MEGA2560_BOARD_CMD_WIFI_MAX_ID,
-    
-    //MEGA2560_BOARD_CMD_CHANGE_PATH
-    //....
-    MEGA2560_BOARD_CMD_SWITCH_CONNECT,
-    MEGA2560_BOARD_CMD_MAX_ID,
-    GCS_CMD_REPORT_STATUS,
-    MEGA2560_BOARD_CMD_2G_CONNECT,
-    MEGA2560_BOARD_CMD_2G_DISCONNECT,
-    MEGA2560_BOARD_CMD_2G_SEND_DTMF,
-    
-    GCS_CMD_MAX_ID
-};
-struct param_ip_data{
-    uint8_t ip[4];
-    uint8_t port[2] ;
-};
-//}
+
 void mega2560_send_wifi_cmd(int cmd, struct param_ip_data *data)
 {
   mavlink_param_set_t ps;
@@ -1069,6 +1100,35 @@ void mega2560_listen_wifi(){
       triggle_led(LED_WIFI_CONNECTED);
     }
 }
+
+int mega2560_2g_uartBuff_index = 0;
+#define MEGA2560_2G_BUFF_SIZE 256
+uint8_t mega2560_2g_uartBuff[MEGA2560_2G_BUFF_SIZE]={0};
+
+void mega2560_listen_callSerial()
+{
+    int len, i;
+    uint16_t p_len ;
+    
+    len = callSerial.available();
+    len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
+    if( len > 0 ) {
+      len = callSerial.readBytes(uartBuffer,len);
+      //Serial.write(uartBuffer,len);
+      for( i=0 ; i< len; i++){
+         if( uartBuffer[i] == '\n' || uartBuffer[i] == '\r' || mega2560_2g_uartBuff_index>=MEGA2560_2G_BUFF_SIZE){
+           if( mega2560_2g_uartBuff_index > 0 ){
+             mega2560_2g_uartBuff[mega2560_2g_uartBuff_index++] = uartBuffer[i];
+             mega2560_send_log_to_gcs(mega2560_2g_uartBuff, mega2560_2g_uartBuff_index); 
+             mega2560_2g_uartBuff_index = 0;
+           }
+         }else{
+           mega2560_2g_uartBuff[mega2560_2g_uartBuff_index++] = uartBuffer[i];
+         }
+      }
+     // mega2560_send_log_to_gcs(uartBuffer, len); 
+    }
+}
 void mega2560_listen_gcsConfig()
 {
     int len, i;
@@ -1253,7 +1313,16 @@ void loop() {
    //debug_rc_channel_val(3);
 
   
-  mega2560_uart_loop();
+  //mega2560_uart_loop();
+  //mega2560_listen_telem();
+  //mega2560_listen_wifi();
+  //mega2560_listen_gcs();
+  set_connect_type(0);
+  mega2560_listen_gcsConfig();
+  mega2560_listen_callSerial();
+  mega2560_listen_gcs();
+  
+  
   mega2560_update_status();
   update_rc_loop(10);//echo 10ms update update
   //update_key_loop();
