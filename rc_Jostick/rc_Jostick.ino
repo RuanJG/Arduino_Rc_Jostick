@@ -1,10 +1,4 @@
-
-
-
-
 #include <mavlink.h>
-
-
 
 #define BOARD_PRO_MICRO 1
 #define BOARD_UNO 2
@@ -810,6 +804,15 @@ void mega2560_2g_send_dtmf(char dtmf)
   memcpy(&cmd[8],"\r\n",2);
   callSerial.write(cmd,10);
 }
+void mega2560_2g_echo_dtmf(int enable)
+{//AT+VTS=1//dtmf
+  char cmd[16]={0};
+  if( enable == 1 )
+    memcpy(cmd,"AT+DDET=1\r\n",11);
+  else
+    memcpy(cmd,"AT+DDET=0\r\n",11);
+  callSerial.write(cmd,11);
+}
 void mega2560_2g_call_disconnect()
 {//ADT+number+;
   char cmd[8]={0};
@@ -841,6 +844,7 @@ void mega2560_send_log_to_gcs(uint8_t * buf, int len)
     //for( i ; i< 11; i++ ) p[i] = 0;
     mavlink_msg_rc_channels_override_encode(MAVLINK_SYSID, MAVLINK_COMPID ,&message, &sp);
     mega2560_send_mavlink(1<<GCS_CONFIG_ID,&message);
+    if( count<len ) delay(50);
   }
 
 }
@@ -976,6 +980,8 @@ void mega2560_handle_cmd( mavlink_message_t *msg )
       copter_number[9] = (packet.chan7_raw>>8 & 0xff);
       copter_number[10] = (packet.chan8_raw & 0xff);
       mega2560_2g_call_connect();
+      delay(50);
+      mega2560_2g_echo_dtmf(1);
       break;
     }
     case MEGA2560_BOARD_CMD_2G_DISCONNECT:{
@@ -1054,6 +1060,7 @@ void mega2560_listen_gcs(){
     len = len>UART_BUFFER_LEN ? UART_BUFFER_LEN:len;
     if( len > 0 ) {
       len = gcsSerial.readBytes(uartBuffer,len);
+      //callSerial.write(uartBuffer,len);
 #if GCS_USE_BLE
        bleConnected = 1;
 #endif
@@ -1116,7 +1123,7 @@ void mega2560_listen_callSerial()
       len = callSerial.readBytes(uartBuffer,len);
       //Serial.write(uartBuffer,len);
       for( i=0 ; i< len; i++){
-         if( uartBuffer[i] == '\n' || uartBuffer[i] == '\r' || mega2560_2g_uartBuff_index>=MEGA2560_2G_BUFF_SIZE){
+         if( uartBuffer[i] == '\n'  || mega2560_2g_uartBuff_index>=MEGA2560_2G_BUFF_SIZE){
            if( mega2560_2g_uartBuff_index > 0 ){
              mega2560_2g_uartBuff[mega2560_2g_uartBuff_index++] = uartBuffer[i];
              mega2560_send_log_to_gcs(mega2560_2g_uartBuff, mega2560_2g_uartBuff_index); 
@@ -1154,7 +1161,7 @@ void mega2560_listen_gcsConfig()
         }
       }
       //lastPackageTime[GCS_ID] = millis();
-    }
+   }
 }
 
 inline void mega2560_send_mavlink(uint8_t ids,mavlink_message_t *message)
@@ -1303,7 +1310,7 @@ void setup() {
   setup_key_pin_mode();
   setup_led_pin_mode();
   //update_rc_trim_value();
-  
+  set_connect_type(0);
   Wire.begin();
 }
 
@@ -1317,7 +1324,7 @@ void loop() {
   //mega2560_listen_telem();
   //mega2560_listen_wifi();
   //mega2560_listen_gcs();
-  set_connect_type(0);
+  
   mega2560_listen_gcsConfig();
   mega2560_listen_callSerial();
   mega2560_listen_gcs();
